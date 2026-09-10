@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile UI to PSD Converter - Aggressive Mode</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/ag-psd@31.0.2/dist/bundle.js"></script>
+    <script>
+      (function(){
+        function loadFallback(src){ var s=document.createElement('script'); s.src=src; s.async=false; document.head.appendChild(s); }
+        setTimeout(function(){
+          if(typeof agPsd==='undefined'){
+            console.warn('ag-psd CDN failed, loading local fallback');
+            loadFallback('assets/ag-psd.bundle.js');
+            loadFallback('../assets/ag-psd.bundle.js');
+            loadFallback('/static/ag-psd.bundle.js');
+          }
+        }, 1500);
+      })();
+    </script>
+    <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+    
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; min-height: 100vh; padding: 20px; color: #f1f5f9; }
+        .container { max-width: 1200px; margin: 0 auto; background: #1e293b; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); overflow: hidden; }
+        .header { background: #1e293b; padding: 20px 30px; border-bottom: 1px solid #334155; display:flex; justify-content:space-between; align-items:center; }
+        .header h1 { font-size: 22px; color: #38bdf8; font-weight: 600; }
+        .header .badge { background:#f59e0b; color:#0f172a; padding:4px 10px; border-radius:999px; font-size:11px; font-weight:700; }
+        
+        .main-content { display: flex; min-height: 700px; }
+        .sidebar { flex: 0 0 280px; background: #1e293b; padding: 25px; border-right: 1px solid #334155; display: flex; flex-direction: column; }
+        .editor-area { flex: 1; background: #020617; position: relative; display: flex; flex-direction: column; overflow: hidden; }
+        
+        .control-group { margin-bottom: 20px; }
+        .control-group label { display: block; font-size: 12px; margin-bottom: 8px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .control-group input, .control-group select { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: white; outline: none; font-size: 13px; }
+        .control-group input:focus, .control-group select:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1); }
+
+        .file-label { display: block; padding: 20px; background: #334155; border: 2px dashed #475569; border-radius: 8px; cursor: pointer; text-align: center; font-size: 13px; margin-bottom: 20px; transition: 0.2s; }
+        .file-label:hover { border-color: #38bdf8; background: #3e4e63; }
+
+        .button-group { display: flex; flex-direction: column; gap: 10px; margin-top: auto; }
+        button { padding: 12px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
+        .btn-primary { background: #38bdf8; color: #0f172a; }
+        .btn-primary:hover:not(:disabled) { background: #0ea5e9; }
+        .btn-export { background: #10b981; color: white; }
+        .btn-export:hover:not(:disabled) { background: #059669; }
+        .btn-reset { background: transparent; border: 1px solid #64748b; color: #94a3b8; }
+        .btn-reset:hover { background: rgba(100, 116, 139, 0.1); }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .canvas-wrapper { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 30px; position: relative; background: #000; }
+        .canvas-container { position: relative; box-shadow: 0 0 60px rgba(0,0,0,0.9); }
+        #canvas { display: block; image-rendering: auto; }
+
+        .text-box { position: absolute; border: 1.5px solid rgba(56, 189, 248, 0.4); background: rgba(56, 189, 248, 0.05); z-index: 10; padding: 0; box-sizing: border-box; overflow:hidden; }
+        .text-box:hover { border-color: #38bdf8; background: rgba(56, 189, 248, 0.12); z-index: 20; }
+        .text-box.selected { border-color: #10b981; background: rgba(16, 185, 129, 0.15); }
+        
+        .text-box textarea { 
+            width: 100%; height: 100%; border: none; background: transparent; 
+            outline: none; overflow: hidden; resize: none; 
+            padding: 0; margin: 0; font-family: Arial, sans-serif;
+            white-space: pre-wrap; word-break: break-word;
+        }
+
+        .loader { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.95); z-index: 100; display: none; flex-direction: column; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+        .loader.active { display: flex; }
+        .spinner { border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid #38bdf8; border-radius: 50%; width: 50px; height: 50px; animation: spin 0.8s linear infinite; margin-bottom: 20px; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        .status-msg { padding: 12px; background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8; border-radius: 4px; margin-bottom: 15px; font-size: 12px; color: #e0f2fe; word-break:break-word; }
+        .status-msg.success { border-left-color: #10b981; background: rgba(16, 185, 129, 0.1); color: #d1fae5; }
+        .status-msg.error { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.1); color: #fee2e2; }
+
+        .info-box { background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; padding: 12px; border-radius: 4px; font-size: 11px; color: #fde68a; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header"><h1>📱 Mobile UI to PSD Converter</h1><span class="badge">AGGRESSIVE • LOW THRESHOLD</span></div>
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="control-group">
+                    <label>📁 Upload Screenshot</label>
+                    <input type="file" id="fileInput" hidden accept=".png,.jpg,.jpeg,.webp,.psd" />
+                    <label for="fileInput" class="file-label">Choose Image</label>
+                </div>
+
+                <div id="statusBox" class="status-msg" style="display:none;"></div>
+
+                <div class="control-group">
+                    <label>🔤 Font Family</label>
+                    <select id="fontFamily">
+                        <option value="AUTO" selected>Auto – Support All Fonts (Recommended)</option>
+                        <option value="ArialMT">Arial</option>
+                        <option value="HelveticaNeue">Helvetica Neue</option>
+                        <option value="SFProDisplay">SF Pro Display</option>
+                        <option value="Roboto">Roboto</option>
+                        <option value="Ubuntu">Ubuntu</option>
+                        <option value="Poppins">Poppins</option>
+                        <option value="OpenSans">Open Sans</option>
+                        <option value="SegoeUI">Segoe UI</option>
+                        <option value="Tahoma">Tahoma</option>
+                        <option value="Verdana">Verdana</option>
+                        <option value="Calibri">Calibri</option>
+                        <option value="Montserrat">Montserrat</option>
+                    </select>
+                    <div class="hint" style="font-size:11px; color:#64748b; margin-top:6px; line-height:1.4;">Auto: per-box Groq + 12-font matcher. Arial: forces ArialMT.</div>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn-primary" id="detectBtn" disabled>🔍 Detect & Extract</button>
+                    <button class="btn-export" id="exportBtn" disabled>💾 Export to PSD</button>
+                    <button class="btn-reset" onclick="location.reload()">🔄 Reset</button>
+                </div>
+
+                <div class="info-box" style="margin-top: 20px;">
+                    <strong>⚡ Aggressive Detection</strong><br><br>
+                    ✓ Very low threshold (20% conf → catches tiny text)<br>
+                    ✓ Strict line grouping (no merges)<br>
+                    ✓ Best for low-contrast / dense UIs
+                </div>
+            </div>
+
+            <div class="editor-area">
+                <div class="loader" id="loader">
+                    <div class="spinner"></div>
+                    <p id="loaderText" style="color: #38bdf8; font-weight: 500;">Processing...</p>
+                    <p id="loaderSub" style="color:#64748b;font-size:11px;margin-top:6px;"></p>
+                </div>
+                <div class="canvas-wrapper">
+                    <div class="canvas-container" id="canvasContainer">
+                        <canvas id="canvas"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const canvasContainer = document.getElementById('canvasContainer');
+        const loader = document.getElementById('loader');
+        const detectBtn = document.getElementById('detectBtn');
+        const exportBtn = document.getElementById('exportBtn');
+        const statusBox = document.getElementById('statusBox');
+
+        let currentImage = null;
+        let fullResCtx = null;
+        let ocrData = [];
+        let scaleFactor = 1;
+        let originalFileNameBase = "UI_Aggressive";
+        function getOriginalBaseName(name) {
+            if (!name) return "UI_Aggressive";
+            let base = name.trim().replace(/\.[^.]+$/, "");
+            base = base.replace(/[\\\/:*?"<>|\x00-\x1F]/g, "_");
+            base = base.replace(/[. ]+$/g, "");
+            if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(base)) base = "_" + base;
+            base = base || "UI_Aggressive";
+            if (base.length > 240) base = base.slice(0,240);
+            return base;
+        }
+        function getSafeBaseName(name) { return getOriginalBaseName(name); }
+
+        function showStatus(msg, type = 'info') {
+            statusBox.style.display = 'block';
+            statusBox.textContent = msg;
+            statusBox.className = 'status-msg ' + type;
+        }
+
+        fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+        async function handleFile(file) {
+            originalFileNameBase = getSafeBaseName(file.name);
+            setLoading(true, 'Loading image...', file.name);
+            try {
+                if (file.name.toLowerCase().endsWith('.psd')) {
+                    const buffer = await file.arrayBuffer();
+                    const psd = agPsd.readPsd(buffer);
+                    if (psd.canvas) await setupImage(psd.canvas);
+                } else {
+                    const img = await new Promise((resolve, reject) => {
+                        const i = new Image();
+                        i.onload = () => resolve(i);
+                        i.onerror = () => reject(new Error('Failed to load'));
+                        i.crossOrigin = 'anonymous';
+                        i.src = URL.createObjectURL(file);
+                    });
+                    await setupImage(img);
+                }
+                detectBtn.disabled = false;
+                showStatus(`✓ Image loaded: ${currentImage.width}×${currentImage.height}px`, 'success');
+            } catch (e) {
+                showStatus('✗ Error: ' + e.message, 'error');
+            }
+            setLoading(false);
+        }
+
+        async function setupImage(imgSource) {
+            currentImage = imgSource;
+            const fullCanvas = document.createElement('canvas');
+            fullCanvas.width = imgSource.width;
+            fullCanvas.height = imgSource.height;
+            fullResCtx = fullCanvas.getContext('2d', { willReadFrequently: true });
+            fullResCtx.imageSmoothingEnabled = false;
+            fullResCtx.drawImage(imgSource, 0, 0);
+
+            scaleFactor = Math.max(1, imgSource.width / 1000);
+            canvas.width = Math.floor(imgSource.width / scaleFactor);
+            canvas.height = Math.floor(imgSource.height / scaleFactor);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(imgSource, 0, 0, canvas.width, canvas.height);
+            clearEditor();
+            ocrData = [];
+        }
+
+        async function detectAndExtract() {
+            setLoading(true, 'Detecting text (aggressive)...', '3× upscale • low threshold • strict grouping');
+            try {
+                const preprocessed = preprocessImageAggressive();
+                const worker = await Tesseract.createWorker('eng');
+                await worker.setParameters({
+                    tessedit_char_whitelist: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:,()-+/[]{}%$@#&!?\'"\\ ',
+                    tesseract_create_tsv: 1,
+                    tesseract_pagesegmode: 6
+                });
+                setLoading(true, 'Running OCR engine...', 'Aggressive mode finds tiny text');
+                const result = await worker.recognize(preprocessed);
+                await worker.terminate();
+                processOCRResultAggressive(result.data);
+                renderBoxes();
+                exportBtn.disabled = false;
+                showStatus(`✓ Detected ${ocrData.length} text frames (aggressive) • typography matched`, 'success');
+            } catch (e) {
+                console.error(e);
+                showStatus('✗ Error: ' + e.message, 'error');
+            }
+            setLoading(false);
+        }
+
+        function preprocessImageAggressive() {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = currentImage.width * 3;
+            tempCanvas.height = currentImage.height * 3;
+            const tCtx = tempCanvas.getContext('2d');
+            tCtx.filter = 'contrast(1.8) brightness(1.2) saturate(1.3) brightness(1.15)';
+            tCtx.drawImage(currentImage, 0, 0, tempCanvas.width, tempCanvas.height);
+            return tempCanvas;
+        }
+
+        function processOCRResultAggressive(data) {
+            ocrData = [];
+            let filtered = data.words.filter(w => w.confidence > 20 && w.text.trim().length > 0);
+            if (filtered.length < 5) {
+                filtered = data.words.filter(w => w.confidence > 10 && w.text.trim().length > 0);
+            }
+            if (filtered.length === 0) {
+                filtered = data.words.filter(w => w.text.trim().length > 0);
+            }
+            let groupedLines = [];
+            filtered.forEach(word => {
+                let merged = false;
+                const wordYMid = (word.bbox.y0 + word.bbox.y1) / 2;
+                const wordHeight = word.bbox.y1 - word.bbox.y0;
+                for (let line of groupedLines) {
+                    const yDist = Math.abs(line.yMid - wordYMid);
+                    const lineHeight = line.y1 - line.y0;
+                    const avgHeight = (wordHeight + lineHeight) / 2;
+                    if (yDist < avgHeight * 0.4) {
+                        if (!line.words.some(w => Math.abs(w.bbox.x0 - word.bbox.x0) < 15 && Math.abs(w.bbox.y0 - word.bbox.y0) < 12)) {
+                            line.words.push(word);
+                            line.xMax = Math.max(line.xMax, word.bbox.x1);
+                            line.y0 = Math.min(line.y0, word.bbox.y0);
+                            line.y1 = Math.max(line.y1, word.bbox.y1);
+                            line.yMid = (line.y0 + line.y1) / 2;
+                            merged = true;
+                            break;
+                        }
+                    }
+                }
+                if (!merged) {
+                    groupedLines.push({
+                        yMid: wordYMid,
+                        y0: word.bbox.y0,
+                        y1: word.bbox.y1,
+                        xMin: word.bbox.x0,
+                        xMax: word.bbox.x1,
+                        words: [word]
+                    });
+                }
+            });
+            // median gap
+            let sorted = [...groupedLines].sort((a,b)=>a.y0-b.y0);
+            let gaps=[];
+            for(let i=0;i<sorted.length-1;i++){ const g=sorted[i+1].y0 - sorted[i].y1; if(g>=0 && g<60) gaps.push(g); }
+            const medianGap = gaps.length ? gaps.sort((a,b)=>a-b)[Math.floor(gaps.length/2)] : 0;
+            groupedLines.forEach((line) => {
+                line.words.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+                const x = line.xMin, y=line.y0, w=line.xMax - line.xMin, h=line.y1 - line.y0;
+                const fullText = line.words.map(w => w.text).join(' ');
+                const avgConf = line.words.reduce((a, b) => a + b.confidence, 0) / line.words.length;
+                const hasDesc=/[gjpqy]/.test(fullText), hasAsc=/[bdfhkltA-Z]/.test(fullText);
+                let fontSize = hasDesc&&hasAsc ? h*0.88 : hasDesc||hasAsc ? h*0.92 : h*0.98;
+                fontSize=Math.max(6,fontSize);
+                // gap to next for leading
+                const idx = sorted.indexOf(line);
+                const nextGap = idx>=0 && idx<sorted.length-1 ? (sorted[idx+1].y0 - line.y1) : medianGap;
+                const g = (nextGap>=0 && nextGap<60)?nextGap:medianGap;
+                let lineHeight = h + (g||0);
+                lineHeight=Math.max(fontSize*1.08, Math.min(lineHeight, fontSize*2.0));
+                if(!gaps.length) lineHeight=fontSize*1.15;
+                let tracking=0; // size-only, no tracking
+                let alignment='left'; const imgW=currentImage.width, cx=x+w/2, tol=Math.max(15,imgW*0.03); if(Math.abs(cx-imgW/2)<tol) alignment='center'; else if((imgW-(x+w))<22 && x>30) alignment='right';
+                const color = sampleColorAggressive(line.xMin, line.y0, line.xMax, line.y1);
+                let weight=400; try{ const sx=Math.floor(x+w*0.3), sy=Math.floor(y+h*0.3), sw=Math.max(8,Math.floor(w*0.35)), sh=Math.max(8,Math.floor(h*0.4)); if(fullResCtx){ const d=fullResCtx.getImageData(sx,sy,Math.min(sw,currentImage.width-sx),Math.min(sh,currentImage.height-sy)).data; let dark=0; for(let i=0;i<d.length;i+=4){ const lum=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; if(lum<90) dark++; } const r=dark/(d.length/4); if(r>0.38) weight=700; else if(r>0.28) weight=600; else if(r>0.18) weight=500; } }catch{}
+                ocrData.push({ text: fullText, x, y, w, h, fontSize, color, confidence: avgConf, lineHeight, letterSpacing: tracking, alignment, fontWeight: weight, fontStyle:'normal' });
+            });
+            ocrData.sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x);
+        }
+
+        function sampleColorAggressive(x0, y0, x1, y1) {
+            const sampleX = Math.floor(x0 + (x1 - x0) * 0.2);
+            const sampleY = Math.floor(y0 + (y1 - y0) * 0.2);
+            const sampleW = Math.max(12, Math.floor((x1 - x0) * 0.6));
+            const sampleH = Math.max(12, Math.floor((y1 - y0) * 0.6));
+            try{
+                const imageData = fullResCtx.getImageData(sampleX, sampleY, sampleW, sampleH).data;
+                let colorFreq = {};
+                for (let i = 0; i < imageData.length; i += 4) {
+                    const r = imageData[i], g = imageData[i + 1], b = imageData[i + 2], a = imageData[i + 3];
+                    if (a < 100) continue;
+                    const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+                    if (brightness > 245 || brightness < 5) continue;
+                    const key = `${r},${g},${b}`;
+                    colorFreq[key] = (colorFreq[key] || 0) + 1;
+                }
+                if (!Object.keys(colorFreq).length) return '#666666';
+                const dominant = Object.entries(colorFreq).sort((a, b) => b[1] - a[1])[0][0];
+                const [r, g, b] = dominant.split(',').map(Number);
+                return rgbToHex(r, g, b);
+            }catch{ return '#666666'; }
+        }
+
+        function rgbToHex(r, g, b) {
+            return '#' + [Math.max(0, Math.min(255, Math.round(r))), Math.max(0, Math.min(255, Math.round(g))), Math.max(0, Math.min(255, Math.round(b)))].map(v => v.toString(16).padStart(2, '0')).join('');
+        }
+
+        function renderBoxes() {
+            clearEditor();
+            ocrData.forEach((item, index) => {
+                const div = document.createElement('div');
+                div.className = 'text-box';
+                div.style.left = (item.x / scaleFactor)+'px';
+                div.style.top = (item.y / scaleFactor)+'px';
+                div.style.width = (item.w / scaleFactor)+'px';
+                div.style.height = (item.h / scaleFactor)+'px';
+                const area = document.createElement('textarea');
+                area.value = item.text;
+                area.spellcheck = false;
+                area.style.color = item.color;
+                area.style.fontSize = (item.fontSize / scaleFactor) + 'px';
+                area.style.lineHeight = (item.lineHeight / scaleFactor) + 'px';
+                area.style.letterSpacing = '0px';
+                area.style.wordSpacing = '0px';
+                area.style.fontWeight = String(item.fontWeight||400);
+                area.style.textAlign = item.alignment||'left';
+                area.oninput = (e) => { item.text = e.target.value; };
+                div.appendChild(area);
+                div.onclick = (e) => {
+                    document.querySelectorAll('.text-box').forEach(el => el.classList.remove('selected'));
+                    div.classList.add('selected');
+                    e.stopPropagation();
+                };
+                canvasContainer.appendChild(div);
+            });
+        }
+
+        async function exportToPSD() {
+            if (typeof agPsd === 'undefined' || !agPsd.writePsd) {
+                showStatus('✗ PSD engine not loaded.', 'error');
+                return;
+            }
+            setLoading(true, 'Creating PSD file...', 'Original Image in front + text behind');
+            try {
+                const fontFamily = document.getElementById('fontFamily').value;
+                const W = currentImage.width, H = currentImage.height;
+                const psdLayers = [];
+                // Original Image in front (top) – per user request, no extra background
+                psdLayers.push({ name: "Original Image", canvas: fullResCtx.canvas, left: 0, top: 0, right: W, bottom: H, opacity: 1, blendMode: 'normal', hidden: false });
+                const psFontMap = { 'ArialMT':'ArialMT','HelveticaNeue':'ArialMT','SFProDisplay':'ArialMT','Roboto':'Roboto-Regular','Ubuntu':'Ubuntu','Poppins':'Poppins-Regular','OpenSans':'OpenSans','SegoeUI':'SegoeUI','Tahoma':'Tahoma','Verdana':'Verdana','Calibri':'Calibri','Montserrat':'Montserrat-Regular' };
+                const justifyMapStr = { left:'left', right:'right', center:'center', justify:'justify' };
+                ocrData.forEach((item, idx) => {
+                    let fontFamRaw = (fontFamily && fontFamily !== 'AUTO') ? fontFamily : (item.fontFamily || 'ArialMT');
+                    const fontFam = psFontMap[fontFamRaw] || 'ArialMT';
+                    const fs=Math.max(4, Math.round(item.fontSize||item.h*0.88)), lh=Math.round(item.lineHeight||Math.round(fs*1.15));
+                    const justificationStr = justifyMapStr[item.alignment] || 'left';
+                    const ascent = Math.round(fs*0.78);
+                    let baselineY = Math.round(item.y + ascent);
+                    let left = Math.max(0, Math.round(item.x));
+                    let top = Math.max(0, Math.round(item.y));
+                    let right = Math.min(W, Math.round(item.x + item.w + 6));
+                    let bottom = Math.min(H, Math.round(item.y + item.h + 8));
+                    if (right <= left) right = Math.min(W, left + Math.max(16, item.w + 6));
+                    if (bottom <= top) bottom = Math.min(H, top + Math.max(18, item.h + 8));
+                    if (baselineY < top + Math.round(fs*0.6)) baselineY = top + Math.round(fs*0.78);
+                    if (baselineY > bottom - 6) baselineY = bottom - 6;
+                    const isBold=(item.fontWeight||400)>=600;
+                    const isItalic = item.fontStyle==='italic';
+                    const rgb=hexToRgb(item.color);
+                    const style={ fontSize:fs, fillColor:{r:rgb.r,g:rgb.g,b:rgb.b,a:255}, font:{name:fontFam}, leading:lh };
+                    if(isBold) style.fauxBold=true;
+                    if(isItalic) style.fauxItalic=true;
+                    psdLayers.push({
+                        name: `Text ${idx + 1}`, left: left, top: top, right: right, bottom: bottom, hidden: false,
+                        text: { text: item.text, transform: [1, 0, 0, 1, left, baselineY], style, paragraphStyle:{justification: justificationStr, leading:lh}, warp:{style:'none',value:0,perspective:0,perspectiveOther:0,rotate:'horizontal'}, orientation:'horizontal', antiAlias:'sharp' },
+                        opacity: 1, blendMode: 'normal'
+                    });
+                });
+                // PSD with Original Image in front (top) and Text behind – per user request
+                const psd = { width: W, height: H, bitsPerChannel: 8, colorMode: 3, children: psdLayers };
+                const buf = agPsd.writePsd(psd, { generateThumbnail: true, invalidateTextLayers: true });
+                const blob = new Blob([buf], { type: 'application/x-photoshop' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `${originalFileNameBase}.psd`;
+                link.click();
+                setTimeout(()=>URL.revokeObjectURL(link.href), 5000);
+                showStatus(`✓ PSD exported: ${ocrData.length} text behind Original Image • ${originalFileNameBase}.psd`, 'success');
+            } catch (e) {
+                console.error(e);
+                showStatus('✗ Export Error: ' + e.message, 'error');
+            }
+            setLoading(false);
+        }
+
+        function hexToRgb(h) {
+            h=h.trim(); if(h.startsWith('#')) h=h.slice(1); if(h.length===3) h=h.split('').map(c=>c+c).join('');
+            return { r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16), a: 255 };
+        }
+        // fix hexToRgb for aggressive (avoid bug)
+        function hexToRgbFixed(h){
+            h=h.trim(); if(h.startsWith('#')) h=h.slice(1); if(h.length===3) h=h.split('').map(c=>c+c).join('');
+            return { r: parseInt(h.slice(0,2),16)||0, g: parseInt(h.slice(2,4),16)||0, b: parseInt(h.slice(4,6),16)||0, a:255 };
+        }
+        // monkey patch
+        hexToRgb = hexToRgbFixed;
+
+        function setLoading(s, t, sub) {
+            loader.classList.toggle('active', s);
+            if (t) document.getElementById('loaderText').innerText = t;
+            const subEl=document.getElementById('loaderSub'); if(subEl) subEl.innerText=sub||'';
+        }
+
+        function clearEditor() {
+            document.querySelectorAll('.text-box').forEach(e => e.remove());
+        }
+
+        detectBtn.onclick = detectAndExtract;
+        exportBtn.onclick = exportToPSD;
+        document.addEventListener('dragover', (e) => e.preventDefault());
+        document.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    </script>
+</body>
+</html>

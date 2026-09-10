@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image to PSD - Perfect Typography</title>
+    <script src="https://cdn.jsdelivr.net/npm/ag-psd@31.0.2/dist/bundle.js"></script>
+    <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+    <script>
+      // GitHub Pages fallback: if /api/detect not available, use Tesseract.js offline (same as converter_final)
+      async function fallbackTesseractDetect() {
+        if (typeof Tesseract === 'undefined') throw new Error('Tesseract.js not loaded (offline). Check internet for CDN.');
+        const preprocessed = (function(){
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = currentImage.width * 2;
+          tempCanvas.height = currentImage.height * 2;
+          const tCtx = tempCanvas.getContext('2d');
+          tCtx.filter = 'contrast(1.6) brightness(1.12) saturate(1.1)';
+          tCtx.drawImage(currentImage, 0, 0, tempCanvas.width, tempCanvas.height);
+          return tempCanvas;
+        })();
+        const worker = await Tesseract.createWorker('eng');
+        await worker.setParameters({ tessedit_char_whitelist: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:,()-+/[]{}%$@#&!?\'"\\ ' });
+        setLoading(true, 'Running offline OCR (GitHub Pages)...', 'Tesseract.js – no server, same PSD output');
+        const result = await worker.recognize(preprocessed);
+        await worker.terminate();
+        // Reuse same grouping logic as Flask would (simplified)
+        let grouped = [];
+        let filtered = result.data.words.filter(w=>w.confidence>30 && w.text.trim());
+        if (!filtered.length) filtered = result.data.words.filter(w=>w.text.trim());
+        filtered.forEach(word=>{
+          let merged=false;
+          const yMid=(word.bbox.y0+word.bbox.y1)/2, h=word.bbox.y1-word.bbox.y0;
+          for(let line of grouped){
+            const yDist=Math.abs(line.yMid-yMid), avgH=(h + (line.y1-line.y0))/2;
+            if(yDist < avgH*0.6){
+              if(!line.words.some(w=>Math.abs(w.bbox.x0-word.bbox.x0)<10 && Math.abs(w.bbox.y0-word.bbox.y0)<8)){
+                line.words.push(word);
+                line.xMax=Math.max(line.xMax, word.bbox.x1);
+                line.y0=Math.min(line.y0, word.bbox.y0);
+                line.y1=Math.max(line.y1, word.bbox.y1);
+                line.yMid=(line.y0+line.y1)/2;
+                merged=true; break;
+              }
+            }
+          }
+          if(!merged) grouped.push({yMid, y0:word.bbox.y0, y1:word.bbox.y1, xMin:word.bbox.x0, xMax:word.bbox.x1, words:[word]});
+        });
+        let medianGap=0;
+        let sLines=[...grouped].sort((a,b)=>a.y0-b.y0);
+        let gaps=[];
+        for(let i=0;i<sLines.length-1;i++){const g=sLines[i+1].y0-sLines[i].y1; if(g>=0&&g<60) gaps.push(g);}
+        medianGap=gaps.length?gaps.sort((a,b)=>a-b)[Math.floor(gaps.length/2)]:0;
+        let out=[];
+        grouped.forEach((line,idx)=>{
+          line.words.sort((a,b)=>a.bbox.x0-b.bbox.x0);
+          const x=line.xMin, y=line.y0, w=line.xMax-line.xMin, h=line.y1-line.y0;
+          const text=line.words.map(w=>w.text).join(' ');
+          const avgConf=line.words.reduce((a,b)=>a+b.confidence,0)/line.words.length;
+          const hasDesc=/[gjpqy]/.test(text), hasAsc=/[bdfhkltA-Z]/.test(text);
+          let fs= hasDesc&&hasAsc? h*0.90 : hasDesc||hasAsc? h*0.94 : h*1.02;
+          fs=Math.max(7,fs);
+          const gapNext= idx < sLines.length-1 ? (sLines[idx+1]?sLines[idx+1].y0-line.y1:medianGap) : medianGap;
+          const gval=(gapNext>=0&&gapNext<60)?gapNext:medianGap;
+          let lh=h+(gval||0); lh=Math.max(fs*1.08, Math.min(lh, fs*2.0)); if(!gaps.length) lh=fs*1.15;
+          let align='left'; const imgW=currentImage.width, cx=x+w/2, tol=Math.max(15,imgW*0.03); if(Math.abs(cx-imgW/2)<tol) align='center'; else if((imgW-(x+w))<22 && x>30) align='right';
+          // color via canvas sampling (central 50%)
+          let color='#222222';
+          try{
+            const sx=Math.floor(x+w*0.25), sy=Math.floor(y+h*0.25), sw=Math.max(10,Math.floor(w*0.5)), sh=Math.max(10,Math.floor(h*0.5));
+            const d=fullResCtx.getImageData(sx,sy,sw,sh).data; let freq={};
+            for(let i=0;i<d.length;i+=4){ const r=d[i],g=d[i+1],b=d[i+2],a=d[i+3]; if(a<120) continue; const br=0.299*r+0.587*g+0.114*b; if(br>240||br<10) continue; const k=`${r},${g},${b}`; freq[k]=(freq[k]||0)+1; }
+            if(Object.keys(freq).length){ const dom=Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]; const [r,g,b]=dom.split(',').map(Number); color='#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join(''); }
+          }catch{}
+          out.push({text, x,y,w,h, fontSize:fs, color, confidence:avgConf/100, lineHeight:lh, letterSpacing:0, alignment:align, fontWeight:400, fontStyle:'normal', fontFamily:'ArialMT'});
+        });
+        out.sort((a,b)=>a.y!==b.y ? a.y-b.y : a.x-b.x);
+        return {success:true, engine:'tesseract.js (offline)', elements:out, count:out.length, image_width: currentImage.width, image_height: currentImage.height};
+      }
+      // Local fallback if CDN blocked/offline – try static then assets
+      (function(){
+        function loadFallback(src){ var s=document.createElement('script'); s.src=src; s.async=false; document.head.appendChild(s); }
+        setTimeout(function(){
+          if(typeof agPsd==='undefined'){
+            console.warn('ag-psd CDN failed, loading local fallback');
+            loadFallback('/static/ag-psd.bundle.js');
+            setTimeout(function(){
+              if(typeof agPsd==='undefined'){
+                loadFallback('../assets/ag-psd.bundle.js');
+                loadFallback('assets/ag-psd.bundle.js');
+              }
+            }, 800);
+          }
+        }, 1500);
+      })();
+    </script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; min-height: 100vh; padding: 20px; color: #f1f5f9; }
+        .container { max-width: 1280px; margin: 0 auto; background: #1e293b; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); overflow: hidden; }
+        .header { background: #1e293b; padding: 20px 30px; border-bottom: 1px solid #334155; display:flex; justify-content:space-between; align-items:center; }
+        .header h1 { font-size: 22px; color: #38bdf8; font-weight: 600; }
+        .header p { font-size: 12px; color: #94a3b8; margin-top: 5px; }
+        .badge { background:#0ea5e9; color:#0f172a; padding:4px 10px; border-radius:999px; font-size:11px; font-weight:700; }
+        
+        .main-content { display: flex; min-height: 720px; }
+        .sidebar { flex: 0 0 300px; background: #1e293b; padding: 25px; border-right: 1px solid #334155; display: flex; flex-direction: column; overflow-y:auto; max-height: 85vh; }
+        .editor-area { flex: 1; background: #020617; position: relative; display: flex; flex-direction: column; overflow: hidden; }
+        
+        .control-group { margin-bottom: 18px; }
+        .control-group label { display: block; font-size: 11px; margin-bottom: 8px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .control-group input, .control-group select { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: white; outline: none; font-size: 13px; }
+        .control-group input:focus, .control-group select:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1); }
+
+        .file-label { display: block; padding: 20px; background: #334155; border: 2px dashed #475569; border-radius: 8px; cursor: pointer; text-align: center; font-size: 13px; margin-bottom: 18px; transition: 0.2s; }
+        .file-label:hover { border-color: #38bdf8; background: #3e4e63; }
+
+        .button-group { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+        button { padding: 12px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
+        .btn-primary { background: #38bdf8; color: #0f172a; }
+        .btn-primary:hover:not(:disabled) { background: #0ea5e9; }
+        .btn-export { background: #10b981; color: white; }
+        .btn-export:hover:not(:disabled) { background: #059669; }
+        .btn-reset { background: transparent; border: 1px solid #64748b; color: #94a3b8; }
+        .btn-reset:hover { background: rgba(100, 116, 139, 0.1); }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .canvas-wrapper { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 30px; position: relative; background: radial-gradient(circle at center, #0f172a 0%, #000 100%); }
+        .canvas-container { position: relative; box-shadow: 0 0 60px rgba(0,0,0,0.9); background: #000; }
+        #canvas { display: block; image-rendering: auto; }
+
+        .text-box { position: absolute; border: 1.5px solid rgba(56, 189, 248, 0.35); background: rgba(56, 189, 248, 0.03); z-index: 10; padding: 0; box-sizing: border-box; overflow: hidden; }
+        .text-box:hover { border-color: #38bdf8; background: rgba(56, 189, 248, 0.10); z-index: 20; }
+        .text-box.selected { border-color: #10b981; background: rgba(16, 185, 129, 0.10); box-shadow: 0 0 0 1px rgba(16,185,129,0.4); }
+        
+        .text-box textarea { 
+            width: 100%; height: 100%; border: none; background: transparent; 
+            outline: none; overflow: hidden; resize: none; 
+            padding: 0; margin: 0; font-family: Arial, Helvetica, sans-serif;
+            white-space: pre-wrap; word-break: break-word; vertical-align: top;
+        }
+
+        .loader { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.95); z-index: 100; display: none; flex-direction: column; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+        .loader.active { display: flex; }
+        .spinner { border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid #38bdf8; border-radius: 50%; width: 50px; height: 50px; animation: spin 0.8s linear infinite; margin-bottom: 20px; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        .status-msg { padding: 12px; background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8; border-radius: 4px; margin-bottom: 15px; font-size: 12px; color: #e0f2fe; word-break: break-word; }
+        .status-msg.success { border-left-color: #10b981; background: rgba(16, 185, 129, 0.1); color: #d1fae5; }
+        .status-msg.error { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.1); color: #fee2e2; }
+
+        .info-box { background: rgba(109, 114, 245, 0.08); border-left: 3px solid #6d72f5; padding: 12px; border-radius: 4px; font-size: 11px; color: #c7d2fe; line-height: 1.6; }
+        .typo-panel { background:#0f172a; border:1px solid #334155; border-radius:8px; padding:12px; margin-top:12px; font-size:11px; line-height:1.6; display:none; }
+        .typo-panel.active { display:block; }
+        .typo-panel h4 { font-size:11px; color:#38bdf8; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px; }
+        .typo-row { display:flex; justify-content:space-between; color:#94a3b8; margin-bottom:3px; }
+        .typo-row span:last-child { color:#e2e8f0; font-weight:600; }
+        .hint { font-size:11px; color:#64748b; margin-top:10px; line-height:1.5; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>📱 Image to PSD</h1>
+                <p>Graphics untouched • Editable text frames • Perfect typography</p>
+            </div>
+            <div class="badge">v2 • TYPOGRAPHY+</div>
+        </div>
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="control-group">
+                    <label>📁 Upload Screenshot</label>
+                    <input type="file" id="fileInput" hidden accept=".png,.jpg,.jpeg,.webp" />
+                    <label for="fileInput" class="file-label">Choose Image<br><span style="font-size:11px;color:#94a3b8">PNG / JPG / WEBP</span></label>
+                </div>
+
+                <div id="statusBox" class="status-msg" style="display:none;"></div>
+
+                <div class="control-group">
+                    <label>🔤 Font Family</label>
+                    <select id="fontFamily">
+                        <option value="AUTO" selected>Auto – Support All Fonts (Recommended)</option>
+                        <option value="ArialMT">Arial</option>
+                        <option value="Helvetica">Helvetica</option>
+                        <option value="HelveticaNeue">Helvetica Neue</option>
+                        <option value="SFProDisplay">SF Pro Display</option>
+                        <option value="Inter">Inter</option>
+                        <option value="Roboto">Roboto</option>
+                        <option value="Poppins">Poppins</option>
+                        <option value="Ubuntu">Ubuntu</option>
+                        <option value="OpenSans">Open Sans</option>
+                        <option value="SegoeUI">Segoe UI</option>
+                        <option value="Tahoma">Tahoma</option>
+                        <option value="Verdana">Verdana</option>
+                        <option value="Calibri">Calibri</option>
+                        <option value="Montserrat">Montserrat</option>
+                    </select>
+                    <div class="hint">Auto: per-box Groq + 12-font matcher picks best. Arial: forces ArialMT for whole section.</div>
+                </div>
+
+                <div class="control-group">
+                    <label>🎯 Precision Mode</label>
+                    <select id="precisionMode">
+                        <option value="perfect">Perfect Match (Recommended)</option>
+                        <option value="fast">Fast Preview</option>
+                    </select>
+                </div>
+
+                <div class="control-group" style="background: rgba(139,92,246,0.08); border:1px solid #334155; border-radius:8px; padding:12px;">
+                    <label style="color:#a78bfa; font-size:11px;">🤖 Groq AI – Match to Original Source</label>
+                    <label style="display:flex; align-items:center; gap:8px; font-size:13px; text-transform:none; letter-spacing:0; font-weight:600; color:#e2e8f0; cursor:pointer;">
+                        <input type="checkbox" id="useGroq" checked style="width:auto; accent-color:#8b5cf6;"> Enable Groq AI to OCR & match text to original image
+                    </label>
+                    <div id="groqStatus" style="font-size:11px; color:#c4b5fd; margin-top:8px; display:block;">✓ Groq enabled by default – will auto-correct to original source.</div>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn-primary" id="detectBtn" disabled>🔍 Detect & Extract</button>
+                    <button class="btn-export" id="exportBtn" disabled>💾 Export to PSD</button>
+                    <button class="btn-reset" onclick="location.reload()">🔄 Reset</button>
+                </div>
+
+                <div id="typoPanel" class="typo-panel">
+                    <h4>Selected Text – Auto Matched</h4>
+                    <div class="typo-row"><span>Content</span><span id="tText">-</span></div>
+                    <div class="typo-row"><span>Font</span><span id="tFont">-</span></div>
+                    <div class="typo-row"><span>Size</span><span id="tSize">-</span></div>
+                    <div class="typo-row"><span>Line Height</span><span id="tLeading">-</span></div>
+                    <div class="typo-row"><span>Weight</span><span id="tWeight">-</span></div>
+                    <div class="typo-row"><span>Style</span><span id="tStyle">-</span></div>
+                    <div class="typo-row"><span>Tracking</span><span id="tTracking">-</span></div>
+                    <div class="typo-row"><span>Align</span><span id="tAlign">-</span></div>
+                    <div class="typo-row"><span>Color</span><span style="display:flex; align-items:center; gap:6px;"><span id="tColor">-</span><input type="color" id="tColorPicker" style="width:22px; height:18px; padding:0; border:none; border-radius:3px; cursor:pointer; display:none;"></span></div>
+                    <div class="typo-row"><span>OCR Conf</span><span id="tConf">-</span></div>
+                </div>
+
+
+            </div>
+
+            <div class="editor-area">
+                <div class="loader" id="loader">
+                    <div class="spinner"></div>
+                    <p id="loaderText" style="color: #38bdf8; font-weight: 500;">Processing...</p>
+                    <p id="loaderSub" style="color:#64748b;font-size:12px;margin-top:8px;"></p>
+                </div>
+                <div class="canvas-wrapper" id="canvasWrapper">
+                    <div class="canvas-container" id="canvasContainer">
+                        <canvas id="canvas"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const canvasContainer = document.getElementById('canvasContainer');
+        const loader = document.getElementById('loader');
+        const detectBtn = document.getElementById('detectBtn');
+        const exportBtn = document.getElementById('exportBtn');
+        const statusBox = document.getElementById('statusBox');
+        const typoPanel = document.getElementById('typoPanel');
+        const useGroq = document.getElementById('useGroq');
+        const groqStatus = document.getElementById('groqStatus');
+
+        let currentImage = null;
+        let originalFile = null; // original File blob for perfect upload
+        let originalFileNameBase = "ImageToPSD"; // sanitized base name for download
+        let fullResCanvas = null; // full-resolution canvas for PSD background (untouched)
+        let fullResCtx = null;
+        let originalDataURL = null; // PNG data URL from fullResCanvas
+        let ocrData = [];
+        let scaleFactor = 1;
+        let selectedIdx = -1;
+
+        function getOriginalBaseName(name) {
+            if (!name) return "ImageToPSD";
+            // preserve original spaces/case/unicode, only strip extension and Windows forbidden
+            let base = name.trim().replace(/\.[^.]+$/, "");
+            base = base.replace(/[\\\/:*?"<>|\x00-\x1F]/g, "_");
+            base = base.replace(/[. ]+$/g, "");
+            if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(base)) base = "_" + base;
+            base = base || "ImageToPSD";
+            if (base.length > 240) base = base.slice(0,240);
+            return base;
+        }
+        // keep old helper for reference (not used)
+        function getSafeBaseName(name) { return getOriginalBaseName(name); }
+
+        function showStatus(msg, type = 'info') {
+            statusBox.style.display = 'block';
+            statusBox.textContent = msg;
+            statusBox.className = 'status-msg ' + type;
+        }
+
+        fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+        // Groq toggle – single option, no manual paste
+        useGroq.addEventListener('change', () => {
+            if (useGroq.checked) {
+                groqStatus.style.display = 'block';
+                groqStatus.textContent = '✓ Groq enabled – will auto-correct OCR + alignment to match original image (no paste needed, size-only).';
+                groqStatus.style.color = '#c4b5fd';
+                if (ocrData.length>0) {
+                    groqStatus.textContent += ' Click Detect again or wait for auto fit.';
+                }
+            } else {
+                groqStatus.style.display = 'none';
+            }
+        });
+
+        async function handleFile(file) {
+            originalFile = file;
+            originalFileNameBase = getSafeBaseName(file.name);
+            setLoading(true, 'Loading image...', file.name);
+            try {
+                const img = await new Promise((resolve, reject) => {
+                    const i = new Image();
+                    i.onload = () => resolve(i);
+                    i.onerror = () => reject(new Error('Failed to load image'));
+                    i.src = URL.createObjectURL(file);
+                });
+                
+                setupImage(img);
+                detectBtn.disabled = false;
+                exportBtn.disabled = true;
+                showStatus(`✓ Image loaded: ${img.width}×${img.height}px • ${ (file.size/1024).toFixed(1)} KB • Ready to detect`, 'success');
+            } catch (e) {
+                showStatus('✗ Error: ' + e.message, 'error');
+            }
+            setLoading(false);
+        }
+
+        function setupImage(img) {
+            currentImage = img;
+            
+            // Full-res canvas = ORIGINAL raster untouched (for PSD background)
+            fullResCanvas = document.createElement('canvas');
+            fullResCanvas.width = img.width;
+            fullResCanvas.height = img.height;
+            fullResCtx = fullResCanvas.getContext('2d', { willReadFrequently: true });
+            fullResCtx.imageSmoothingEnabled = false;
+            fullResCtx.drawImage(img, 0, 0);
+            originalDataURL = fullResCanvas.toDataURL('image/png'); // lossless PNG
+
+            // Display canvas = scaled for viewport
+            scaleFactor = Math.max(1, img.width / 1100);
+            // also cap height to fit viewport
+            const maxDisplayH = 900;
+            if (img.height / scaleFactor > maxDisplayH) {
+                scaleFactor = img.height / maxDisplayH;
+            }
+            // keep at least 1
+            scaleFactor = Math.max(1, scaleFactor);
+            canvas.width = Math.floor(img.width / scaleFactor);
+            canvas.height = Math.floor(img.height / scaleFactor);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            
+            clearEditor();
+            ocrData = [];
+            selectedIdx = -1;
+            typoPanel.classList.remove('active');
+        }
+
+        async function detectAndExtract() {
+            if (!currentImage) return;
+            // Helpful check: must be served via http, not file://
+            if (location.protocol === 'file:') {
+                showStatus('✗ Open via http://localhost:5000 or http://127.0.0.1:5000 – not by double-clicking the HTML file. Run RUN_SERVER.bat first.', 'error');
+                return;
+            }
+            setLoading(true, 'Sending to Python OCR...', 'Using Tesseract/EasyOCR + typography analysis');
+            detectBtn.disabled = true;
+            try {
+                const formData = new FormData();
+                // Prefer original file bytes (perfect fidelity) – fallback to fullResCanvas blob
+                if (originalFile) {
+                    formData.append('image', originalFile, originalFile.name || 'image.png');
+                } else {
+                    const blob = await new Promise(r => fullResCanvas.toBlob(r, 'image/png'));
+                    formData.append('image', blob, 'image.png');
+                }
+                
+                setLoading(true, 'Running text detection...', 'Analyzing font size • line spacing • color • weight');
+                
+                const response = await fetch('/api/detect', {
+                    method: 'POST',
+                    body: formData,
+                    cache: 'no-store'
+                });
+                
+                let result;
+                const rawText = await response.text();
+                try { result = JSON.parse(rawText); } catch { result = null; }
+                
+                if (!response.ok) {
+                    const msg = (result && (result.error || result.detail)) ? `${result.error} ${result.detail||''}`.trim() : rawText;
+                    throw new Error(`Server ${response.status}: ${msg.slice(0,800)}`);
+                }
+                
+                if (!result || !result.success) {
+                    throw new Error((result && (result.error || result.detail)) || 'Detection failed');
+                }
+                
+                ocrData = result.elements || [];
+                renderBoxes();
+                exportBtn.disabled = ocrData.length === 0;
+                
+                const e0 = ocrData[0];
+                const typographyNote = e0 ? ` • Font: ${e0.fontSize}px • Leading: ${e0.lineHeight}px • ${e0.fontWeight} ${e0.fontStyle}` : '';
+                showStatus(`✓ Detected ${result.count} text frames via ${result.engine}${typographyNote}`, 'success');
+                if (ocrData.length > 0) {
+                    setTimeout(()=> showStatus(`✓ Detected ${result.count} frames. Click any box to inspect typography. Then Export to PSD.`, 'success'), 3500);
+                }
+                // Auto Groq: if enabled, correct OCR + alignment to original image (no manual paste)
+                if (useGroq.checked && ocrData.length>0) {
+                    if (groqStatus) {
+                        groqStatus.style.display = 'block';
+                        groqStatus.textContent = '🤖 Groq auto-correcting to original source...';
+                    }
+                    setTimeout(()=> groqFit(), 800);
+                }
+            } catch (e) {
+                console.error(e);
+                let msg = e.message || String(e);
+                const isPages = location.hostname.includes('github.io');
+                const isFetchFail = msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed');
+                if (isFetchFail) {
+                    if (isPages) {
+                        // GitHub Pages has no Python server – fallback to offline Tesseract (same PSD structure)
+                        try {
+                            showStatus('⚠ No server on GitHub Pages – switching to offline Tesseract (same output)…', 'info');
+                            setLoading(true, 'Running offline OCR...', 'GitHub Pages mode – same PSD, no server');
+                            const result = await fallbackTesseractDetect();
+                            ocrData = result.elements || [];
+                            renderBoxes();
+                            exportBtn.disabled = ocrData.length === 0;
+                            if (typeof groqFit !== 'undefined' && useGroq && useGroq.checked && ocrData.length>0) {
+                                setTimeout(()=> groqFit(), 800);
+                            }
+                            const e0 = ocrData[0];
+                            const typNote = e0 ? ` • Font: ${e0.fontSize.toFixed(1)}px` : '';
+                            showStatus(`✓ Detected ${result.count} frames via ${result.engine}${typNote} (offline)`, 'success');
+                            setLoading(false);
+                            detectBtn.disabled = false;
+                            return;
+                        } catch (fallbackErr) {
+                            console.error('fallback failed', fallbackErr);
+                            msg = 'Offline fallback also failed: ' + (fallbackErr.message || fallbackErr) + ' | Original: ' + msg;
+                        }
+                    }
+                    msg = 'Failed to fetch – is the Python server running? 1) Keep the black/minimized Python window open, 2) Open http://127.0.0.1:5000 (not file://), 3) Wait for "Running on http://0.0.0.0:5000", 4) Try RUN_SERVER.bat or: python app.py --port 5001. Details: ' + msg;
+                }
+                showStatus('✗ Detection Error: ' + msg, 'error');
+                detectBtn.disabled = false;
+            }
+            setLoading(false);
+            detectBtn.disabled = false;
+        }
+
+        async function groqFit() {
+            if (!ocrData.length) { showStatus('✗ No boxes to fit. Detect first.', 'error'); return; }
+            if (!useGroq.checked) { showStatus('✗ Enable Groq toggle first.', 'error'); return; }
+            setLoading(true, 'Groq AI auto-correcting...', 'Groq vision fixes OCR + alignment to original source (no paste, no tracking, size-only)');
+            try {
+                const resp = await fetch('/api/auto-correct', {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ elements: ocrData, image: originalDataURL }),
+                    cache: 'no-store'
+                });
+                const raw = await resp.text();
+                let j;
+                try { j = JSON.parse(raw); } catch { j=null; }
+                if (!resp.ok) {
+                    const msg = j && (j.error||j.detail) ? `${j.error} ${j.detail||''}` : raw;
+                    throw new Error(`Server ${resp.status}: ${msg.slice(0,800)}`);
+                }
+                if (!j || !j.success) throw new Error(j && (j.error||j.detail) || 'Groq fit failed');
+                ocrData = j.elements || ocrData;
+                renderBoxes();
+                const used = j.groqUsed ? 'Groq AI auto' : 'fallback';
+                showStatus(`✓ Groq auto: ${j.count} frames via ${used} – text+alignment matched to original, size-only`, 'success');
+                if (groqStatus) {
+                    groqStatus.style.display = 'block';
+                    groqStatus.textContent = `✓ Groq auto: ${j.count} frames corrected`;
+                    groqStatus.style.color = '#10b981';
+                }
+            } catch (e) {
+                console.error(e);
+                let msg = e.message || String(e);
+                if (msg.includes('Failed to fetch')) msg = 'Groq server unreachable – is http://127.0.0.1:5000 running? ' + msg;
+                showStatus('✗ Groq Fit Error: ' + msg, 'error');
+                if (groqStatus) {
+                    groqStatus.style.display = 'block';
+                    groqStatus.textContent = '✗ Groq failed – using OCR only';
+                    groqStatus.style.color = '#ef4444';
+                }
+            }
+            setLoading(false);
+        }
+
+        function renderBoxes() {
+            clearEditor();
+            ocrData.forEach((item, index) => {
+                const div = document.createElement('div');
+                div.className = 'text-box';
+                // Position already in original px, scale for display
+                div.style.left = (item.x / scaleFactor) + 'px';
+                div.style.top = (item.y / scaleFactor) + 'px';
+                div.style.width = (item.w / scaleFactor) + 'px';
+                div.style.height = (item.h / scaleFactor) + 'px';
+
+                const area = document.createElement('textarea');
+                area.value = item.text;
+                area.spellcheck = false;
+                area.dataset.index = index;
+                // Perfect typography mapping – size-only fit, no tracking per user request
+                const fontSizeDisplay = (item.fontSize || item.h * 0.9) / scaleFactor;
+                const lineHeightDisplay = (item.lineHeight || (item.fontSize||item.h)*1.15) / scaleFactor;
+
+                area.style.color = item.color || '#111827';
+                area.style.fontSize = fontSizeDisplay + 'px';
+                area.style.lineHeight = lineHeightDisplay + 'px';
+                area.style.letterSpacing = '0px';
+                area.style.wordSpacing = '0px';
+                area.style.fontWeight = String(item.fontWeight || 400);
+                area.style.fontStyle = item.fontStyle || 'normal';
+                area.style.textAlign = item.alignment || 'left';
+                // set font family display (match PSD family) – now includes all auto-detected candidates
+                const famMap = {
+                    'ArialMT':'Arial, Helvetica, sans-serif',
+                    'Helvetica':'Helvetica, Arial, sans-serif',
+                    'HelveticaNeue':'"Helvetica Neue", Helvetica, Arial, sans-serif',
+                    'SFProDisplay':'"SF Pro Display", system-ui, sans-serif',
+                    'Inter':'Inter, system-ui, sans-serif',
+                    'Roboto':'Roboto, Arial, sans-serif',
+                    'Poppins':'Poppins, sans-serif',
+                    'Ubuntu':'Ubuntu, sans-serif',
+                    'OpenSans':'"Open Sans", sans-serif',
+                    'SegoeUI':'"Segoe UI", system-ui, sans-serif',
+                    'Tahoma':'Tahoma, sans-serif',
+                    'Verdana':'Verdana, sans-serif',
+                    'Calibri':'Calibri, sans-serif',
+                    'Montserrat':'Montserrat, sans-serif',
+                    'NotoSans':'"Noto Sans", sans-serif'
+                };
+                area.style.fontFamily = famMap[item.fontFamily] || famMap['ArialMT'] || 'Arial, sans-serif';
+
+                area.addEventListener('input', (e) => { 
+                    item.text = e.target.value; 
+                    updateTypoPanel(index);
+                });
+                area.addEventListener('focus', () => selectBox(index));
+
+                div.appendChild(area);
+                
+                div.addEventListener('click', (e) => {
+                    selectBox(index);
+                    e.stopPropagation();
+                });
+
+                canvasContainer.appendChild(div);
+            });
+            // click backdrop to deselect
+            canvasContainer.onclick = (e) => {
+                if (e.target === canvasContainer || e.target === canvas) {
+                    deselectAll();
+                }
+            };
+        }
+
+        function selectBox(idx) {
+            selectedIdx = idx;
+            document.querySelectorAll('.text-box').forEach((el,i) => {
+                el.classList.toggle('selected', i===idx);
+            });
+            updateTypoPanel(idx);
+        }
+        function deselectAll(){
+            selectedIdx = -1;
+            document.querySelectorAll('.text-box').forEach(el => el.classList.remove('selected'));
+            typoPanel.classList.remove('active');
+        }
+        function updateTypoPanel(idx){
+            const item = ocrData[idx];
+            if (!item) return;
+            typoPanel.classList.add('active');
+            document.getElementById('tText').textContent = item.text.slice(0,40) + (item.text.length>40?'…':'');
+            const conf = item.fontFamilyConfidence!=null ? ` (${(item.fontFamilyConfidence*100).toFixed(0)}%)` : '';
+            document.getElementById('tFont').textContent = (item.fontFamily||'ArialMT') + conf;
+            document.getElementById('tSize').textContent = (item.fontSize||0).toFixed(1)+'px';
+            document.getElementById('tLeading').textContent = (item.lineHeight||0).toFixed(1)+'px';
+            document.getElementById('tWeight').textContent = String(item.fontWeight||400);
+            document.getElementById('tStyle').textContent = item.fontStyle||'normal';
+            document.getElementById('tTracking').textContent = '0px (size-only)';
+            document.getElementById('tAlign').textContent = item.alignment||'left';
+            document.getElementById('tColor').textContent = item.color||'#000';
+            document.getElementById('tColor').style.color = item.color||'#000';
+            document.getElementById('tConf').textContent = ((item.confidence||0)*100).toFixed(1)+'%';
+            const picker = document.getElementById('tColorPicker');
+            if (picker) {
+                picker.style.display = 'inline-block';
+                try { picker.value = /^#[0-9a-fA-F]{6}$/.test(item.color) ? item.color : '#000000'; } catch { picker.value = '#000000'; }
+                picker.oninput = (e) => {
+                    item.color = e.target.value;
+                    document.getElementById('tColor').textContent = e.target.value;
+                    document.getElementById('tColor').style.color = e.target.value;
+                    const box = document.querySelectorAll('.text-box')[idx];
+                    if (box) { const ta = box.querySelector('textarea'); if (ta) ta.style.color = e.target.value; }
+                };
+            }
+        }
+
+        async function exportToPSD() {
+            if (!ocrData.length || !fullResCanvas) {
+                showStatus('✗ Nothing to export. Detect first.', 'error');
+                return;
+            }
+            if (typeof agPsd === 'undefined' || !agPsd.writePsd) {
+                showStatus('✗ PSD engine not loaded (ag-psd). Check internet or use offline fallback. Downloading JSON instead.', 'error');
+                const fallback = { width: fullResCanvas.width, height: fullResCanvas.height, image: originalDataURL, elements: ocrData, filename: originalFileNameBase + '.psd', note: 'ag-psd not loaded' };
+                downloadJSON(fallback, originalFileNameBase);
+                return;
+            }
+            setLoading(true, 'Creating PSD...', 'Original Image in front + ' + ocrData.length + ' text frames behind');
+            try {
+                const selectedFont = document.getElementById('fontFamily').value;
+
+                // Prepare background canvas (must be the FULL-RES original, not scaled)
+                // fullResCanvas already holds lossless PNG
+                const W = fullResCanvas.width, H = fullResCanvas.height;
+                const psdLayers = [];
+                // Original Image in front (top) – per user request: only original image, no extra background method, image covers text
+                psdLayers.push({
+                    name: "Original Image",
+                    canvas: fullResCanvas,
+                    left: 0, top: 0, right: W, bottom: H,
+                    opacity: 1,
+                    blendMode: 'normal',
+                    hidden: false
+                });
+
+                // Photoshop 2026 requires proper PostScript font names; map dropdown to PS names
+                const psFontMap = {
+                    'ArialMT': 'ArialMT',
+                    'Helvetica': 'ArialMT', // fallback, Helvetica not on Windows
+                    'HelveticaNeue': 'ArialMT',
+                    'SFProDisplay': 'ArialMT',
+                    'Inter': 'ArialMT',
+                    'Roboto': 'Roboto-Regular',
+                    'Poppins': 'Poppins-Regular',
+                    'Ubuntu': 'Ubuntu',
+                    'OpenSans': 'OpenSans',
+                    'SegoeUI': 'SegoeUI',
+                    'Tahoma': 'Tahoma',
+                    'Verdana': 'Verdana',
+                    'Calibri': 'Calibri',
+                    'Montserrat': 'Montserrat-Regular',
+                    'NotoSans': 'NotoSans'
+                };
+                const justifyMapStr = { left: 'left', right: 'right', center: 'center', justify: 'justify' };
+
+                // Each OCR item -> editable text layer with perfect typography
+                // Text layers first (top of stack), background last (bottom) – PS order is top-to-bottom
+                ocrData.forEach((item, idx) => {
+                    let fontFamRaw = (selectedFont && selectedFont !== 'AUTO') ? selectedFont : (item.fontFamily || 'ArialMT');
+                    const fontFam = psFontMap[fontFamRaw] || 'ArialMT';
+                    const fontSize = Math.max(4, Math.round(item.fontSize || item.h * 0.92));
+                    const lineHt = Math.round(item.lineHeight || Math.round(fontSize * 1.15));
+                    const justificationStr = justifyMapStr[item.alignment] || 'left';
+
+                    // Baseline: ascent ≈ 0.78*fontSize, clamp to stay inside bounds +2px for descenders
+                    const ascent = Math.round(fontSize * 0.78);
+                    let baselineY = Math.round(item.y + ascent);
+                    // Clamp with padding for descenders/overflow (prevents PS clip → invisible)
+                    let left = Math.max(0, Math.round(item.x));
+                    let top = Math.max(0, Math.round(item.y));
+                    // Add 6px width padding and 8px height padding for PS 2026 paragraph bounds
+                    let right = Math.min(W, Math.round(item.x + item.w + 6));
+                    let bottom = Math.min(H, Math.round(item.y + item.h + 8));
+                    if (right <= left) right = Math.min(W, left + Math.max(16, item.w + 6));
+                    if (bottom <= top) bottom = Math.min(H, top + Math.max(18, item.h + 8));
+                    // Ensure baseline inside layer with descender room
+                    if (baselineY < top + Math.round(fontSize*0.6)) baselineY = top + Math.round(fontSize*0.78);
+                    if (baselineY > bottom - 6) baselineY = bottom - 6;
+
+                    const weight = item.fontWeight || 400;
+                    const isBold = weight >= 600;
+                    const isItalic = (item.fontStyle === 'italic');
+
+                    const rgb = hexToRgb(item.color || '#222222');
+                    const styleObj = {
+                        fontSize: fontSize,
+                        fillColor: { r: rgb.r, g: rgb.g, b: rgb.b, a: 255 },
+                        font: { name: fontFam },
+                        leading: lineHt
+                    };
+                    if (isBold) styleObj.fauxBold = true;
+                    if (isItalic) styleObj.fauxItalic = true;
+
+                    psdLayers.push({
+                        name: `Text ${idx+1} • ${item.text.slice(0,18)}${item.text.length>18?'…':''}`,
+                        left: left,
+                        top: top,
+                        right: right,
+                        bottom: bottom,
+                        hidden: false,
+                        text: {
+                            text: item.text,
+                            transform: [1, 0, 0, 1, left, baselineY],
+                            style: styleObj,
+                            paragraphStyle: {
+                                justification: justificationStr,
+                                leading: lineHt
+                            },
+                            warp: { style: 'none', value: 0, perspective: 0, perspectiveOther: 0, rotate: 'horizontal' },
+                            orientation: 'horizontal',
+                            antiAlias: 'sharp'
+                        },
+                        opacity: 1,
+                        blendMode: 'normal'
+                    });
+                });
+
+                // PSD with Original Image in front (top) and Text behind – per user request (no extra background)
+                const psd = {
+                    width: W,
+                    height: H,
+                    bitsPerChannel: 8,
+                    colorMode: 3,
+                    children: psdLayers
+                };
+
+                // Write PSD via ag-psd (client-side, preserves editable text) – invalidateTextLayers forces PS 2026 to redraw
+                let buf;
+                try {
+                    buf = agPsd.writePsd(psd, { generateThumbnail: true, invalidateTextLayers: true });
+                } catch (e) {
+                    console.error('ag-psd write failed', e);
+                    throw new Error('PSD engine error: ' + e.message + ' – downloading JSON manifest instead');
+                }
+
+                const blob = new Blob([buf], { type: 'application/x-photoshop' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${originalFileNameBase}.psd`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(()=> URL.revokeObjectURL(url), 5000);
+
+                showStatus(`✓ PSD exported: ${W}×${H}px • ${ocrData.length} text frames behind Original Image • ${originalFileNameBase}.psd`, 'success');
+
+                // Also notify backend (optional manifest)
+                try {
+                    fetch('/api/export-psd', {
+                        method:'POST',
+                        headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({ elements: ocrData, image: originalDataURL, font: selectedFont, width: fullResCanvas.width, height: fullResCanvas.height })
+                    });
+                } catch(_){}
+            } catch (e) {
+                console.error(e);
+                showStatus('✗ Export fallback: ' + e.message, 'error');
+                // Fallback JSON download so user never loses work
+                const fallback = {
+                    width: fullResCanvas ? fullResCanvas.width : 0,
+                    height: fullResCanvas ? fullResCanvas.height : 0,
+                    image: originalDataURL,
+                    elements: ocrData,
+                    font: document.getElementById('fontFamily').value,
+                    note: 'Background untouched; text frames only'
+                };
+                downloadJSON(fallback);
+            }
+            setLoading(false);
+        }
+
+        function downloadJSON(data, baseName) {
+            const dataStr = JSON.stringify(data, null, 2);
+            const dataBlob = new Blob([dataStr], {type: 'application/json'});
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            const safeBase = baseName || originalFileNameBase || 'PSD_Manifest';
+            link.download = `${safeBase}_manifest_${Date.now()}.json`;
+            link.click();
+            setTimeout(()=> URL.revokeObjectURL(url), 3000);
+            showStatus('✓ Manifest downloaded (JSON). PSD via ag-psd is primary.', 'success');
+        }
+
+        function hexToRgb(h) {
+            try {
+                h = h.trim();
+                if (h.startsWith('#')) h = h.slice(1);
+                if (h.length===3) h = h.split('').map(c=>c+c).join('');
+                return {
+                    r: parseInt(h.slice(0, 2), 16) || 0,
+                    g: parseInt(h.slice(2, 4), 16) || 0,
+                    b: parseInt(h.slice(4, 6), 16) || 0,
+                    a: 255
+                };
+            } catch {
+                return {r:34,g:34,b:34,a:255};
+            }
+        }
+
+        function setLoading(show, title, sub='') {
+            loader.classList.toggle('active', show);
+            if (title) document.getElementById('loaderText').innerText = title;
+            document.getElementById('loaderSub').innerText = sub || '';
+        }
+
+        function clearEditor() {
+            document.querySelectorAll('.text-box').forEach(e => e.remove());
+        }
+
+        detectBtn.onclick = detectAndExtract;
+        exportBtn.onclick = exportToPSD;
+
+        // Drag and drop
+        const wrapper = document.getElementById('canvasWrapper');
+        wrapper.addEventListener('dragover', (e) => { e.preventDefault(); wrapper.style.background='#0f172a'; });
+        wrapper.addEventListener('dragleave', () => wrapper.style.background='');
+        wrapper.addEventListener('drop', (e) => {
+            e.preventDefault();
+            wrapper.style.background='';
+            if (e.dataTransfer.files[0]) {
+                originalFile = e.dataTransfer.files[0];
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+        document.addEventListener('dragover', (e) => e.preventDefault());
+        document.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files[0] && !originalFile) handleFile(e.dataTransfer.files[0]);
+        });
+
+        // Keyboard: delete selected box
+        document.addEventListener('keydown', (e)=>{
+            if ((e.key==='Delete' || e.key==='Backspace') && selectedIdx>=0 && document.activeElement.tagName!=='TEXTAREA') {
+                ocrData.splice(selectedIdx,1);
+                renderBoxes();
+                deselectAll();
+                showStatus(`✓ Removed frame. ${ocrData.length} frames remaining.`, 'success');
+            }
+        });
+
+        // Health check on load – helps debug “Failed to fetch”
+        (async () => {
+            try {
+                const r = await fetch('/api/health', {cache:'no-store'});
+                const j = await r.json();
+                if (j.status==='ok') {
+                    console.log('Server health', j);
+                    if (!j.easyocr) showStatus('⚠ EasyOCR not available – detection will fail. Install: pip install easyocr', 'error');
+                }
+            } catch (err) {
+                if (location.protocol === 'file:') {
+                    showStatus('⚠ Open via http://127.0.0.1:5000 (not file://). Double-click RUN_SERVER.bat first.', 'error');
+                } else {
+                    showStatus('⚠ Server not reachable – keep the Python window open and wait for “Running on http://0.0.0.0:5000”. Try RUN_SERVER.bat or http://127.0.0.1:5000', 'error');
+                }
+                console.warn('health check failed', err);
+            }
+        })();
+    </script>
+</body>
+</html>

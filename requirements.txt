@@ -1,0 +1,18 @@
+flask==2.3.2
+# Flask 2.3.2 is incompatible with Werkzeug 3.x (werkzeug.__version__ removed),
+# so pin a 2.3.x release that Flask 2.3.2 was built against.
+Werkzeug==2.3.7
+flask-cors==4.0.0
+opencv-python==4.8.0.74
+numpy==1.24.3
+# Pillow 10.2-10.4 satisfies easyocr/opencv AND marker-pdf/surya-ocr (<11,>=10.2)
+Pillow>=10.2.0,<11.0.0
+easyocr==1.7.0
+# Fast CPU OCR engine (requires the Tesseract binary installed separately)
+pytesseract>=0.3.10
+# Groq AI text correction
+python-dotenv>=1.0.0
+requests>=2.31.0
+groq>=0.11.0
+openai>=1.30.0
+
