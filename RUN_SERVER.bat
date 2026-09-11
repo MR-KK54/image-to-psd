@@ -1,13 +1,19 @@
-@echo off
+﻿@echo off
 REM Robust starter - uses venv if exists, else global Python
 echo ========================================
 echo Image to PSD - Starting Server
 echo ========================================
 echo.
-REM Prefer venv python if exists
-if exist "venv\Scripts\python.exe" (
+REM Prefer venv pythonw (hidden, no window) if exists, else global pythonw
+if exist "venv\Scripts\pythonw.exe" (
+  echo Found venv, using venv\Scripts\pythonw.exe (hidden)
+  set PYTHON=venv\Scripts\pythonw.exe
+) else if exist "venv\Scripts\python.exe" (
   echo Found venv, using venv\Scripts\python.exe
   set PYTHON=venv\Scripts\python.exe
+) else if exist "C:\Users\Hxtreme\AppData\Local\Programs\Python\Python314\pythonw.exe" (
+  echo Using global pythonw (hidden, no window)
+  set PYTHON=C:\Users\Hxtreme\AppData\Local\Programs\Python\Python314\pythonw.exe
 ) else (
   echo Using global python
   set PYTHON=python
@@ -53,3 +59,4 @@ if errorlevel 1 (
   %PYTHON% app.py --host 0.0.0.0 --port 5001
 )
 pause
+

@@ -96,6 +96,15 @@
                     <select id="fontFamily">
                         <option value="AUTO" selected>Auto – Support All Fonts (Recommended)</option>
                         <option value="ArialMT">Arial</option>
+                        <option value="TimesNewRoman">Times New Roman</option>
+                        <option value="Aptos">Aptos</option>
+                        <option value="CourierNew">Courier New</option>
+                        <option value="MyriadPro">Myriad Pro</option>
+                        <option value="Cambria">Cambria</option>
+                        <option value="CambriaMath">Cambria Math</option>
+                        <option value="SegoeUIHistoric">Segoe UI Historic</option>
+                        <option value="Symbol">Symbol</option>
+                        <option value="Windings">Windings</option>
                         <option value="HelveticaNeue">Helvetica Neue</option>
                         <option value="SFProDisplay">SF Pro Display</option>
                         <option value="Roboto">Roboto</option>
@@ -393,7 +402,7 @@
                 const psdLayers = [];
                 // Original Image in front (top) – per user request, no extra background
                 psdLayers.push({ name: "Original Image", canvas: fullResCtx.canvas, left: 0, top: 0, right: W, bottom: H, opacity: 1, blendMode: 'normal', hidden: false });
-                const psFontMap = { 'ArialMT':'ArialMT','HelveticaNeue':'ArialMT','SFProDisplay':'ArialMT','Roboto':'Roboto-Regular','Ubuntu':'Ubuntu','Poppins':'Poppins-Regular','OpenSans':'OpenSans','SegoeUI':'SegoeUI','Tahoma':'Tahoma','Verdana':'Verdana','Calibri':'Calibri','Montserrat':'Montserrat-Regular' };
+                const psFontMap = { 'ArialMT':'ArialMT','HelveticaNeue':'ArialMT','SFProDisplay':'ArialMT','Roboto':'Roboto-Regular','Ubuntu':'Ubuntu','Poppins':'Poppins-Regular','OpenSans':'OpenSans','SegoeUI':'SegoeUI','Tahoma':'Tahoma','Verdana':'Verdana','Calibri':'Calibri','Montserrat':'Montserrat-Regular','TimesNewRoman':'TimesNewRomanPSMT','Aptos':'Aptos','CourierNew':'CourierNewPSMT','MyriadPro':'MyriadPro-Regular','Cambria':'Cambria','CambriaMath':'CambriaMath','SegoeUIHistoric':'SegoeUIHistoric','Symbol':'SymbolMT','Windings':'Wingdings-Regular' };
                 const justifyMapStr = { left:'left', right:'right', center:'center', justify:'justify' };
                 ocrData.forEach((item, idx) => {
                     let fontFamRaw = (fontFamily && fontFamily !== 'AUTO') ? fontFamily : (item.fontFamily || 'ArialMT');

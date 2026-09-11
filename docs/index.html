@@ -160,12 +160,17 @@
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <div>
-                <h1>📱 Image to PSD</h1>
-                <p>Graphics untouched • Editable text frames • Perfect typography</p>
+        <div class="header" style="display:flex; align-items:center; justify-content:space-between; background:#1e293b; padding:16px 28px; border-bottom:1px solid #334155;">
+            <div style="display:flex; align-items:center; gap:16px;">
+                <img src="/static/logo.jpg" alt="Logo" style="width:48px; height:48px; border-radius:10px; box-shadow:0 0 15px rgba(56,189,248,0.4); object-fit:cover; border:1px solid #38bdf8;" onError="this.src='/assets/logo.jpg'">
+                <div>
+                    <h1 style="font-size:22px; color:#38bdf8; font-weight:700; display:flex; align-items:center; gap:8px; margin:0;">
+                        Image to PSD <span style="font-size:11px; background:linear-gradient(135deg, #38bdf8, #8b5cf6); color:#fff; padding:2px 8px; border-radius:12px; text-transform:uppercase;">PRO</span>
+                    </h1>
+                    <p style="font-size:12px; color:#94a3b8; margin-top:3px;">Graphics untouched • Editable text frames • Perfect typography</p>
+                </div>
             </div>
-            <div class="badge">v2 • TYPOGRAPHY+</div>
+            <div class="badge" style="background:linear-gradient(135deg,#0ea5e9,#8b5cf6); color:#fff; padding:6px 14px; border-radius:999px; font-size:12px; font-weight:700; box-shadow:0 0 10px rgba(139,92,246,0.3);">v2 • AI POWERED</div>
         </div>
         <div class="main-content">
             <div class="sidebar">
@@ -182,6 +187,15 @@
                     <select id="fontFamily">
                         <option value="AUTO" selected>Auto – Support All Fonts (Recommended)</option>
                         <option value="ArialMT">Arial</option>
+                        <option value="TimesNewRoman">Times New Roman</option>
+                        <option value="Aptos">Aptos</option>
+                        <option value="CourierNew">Courier New</option>
+                        <option value="MyriadPro">Myriad Pro</option>
+                        <option value="Cambria">Cambria</option>
+                        <option value="CambriaMath">Cambria Math</option>
+                        <option value="SegoeUIHistoric">Segoe UI Historic</option>
+                        <option value="Symbol">Symbol</option>
+                        <option value="Windings">Windings</option>
                         <option value="Helvetica">Helvetica</option>
                         <option value="HelveticaNeue">Helvetica Neue</option>
                         <option value="SFProDisplay">SF Pro Display</option>
@@ -196,7 +210,7 @@
                         <option value="Calibri">Calibri</option>
                         <option value="Montserrat">Montserrat</option>
                     </select>
-                    <div class="hint">Auto: per-box Groq + 12-font matcher picks best. Arial: forces ArialMT for whole section.</div>
+                    <div class="hint">Auto: per-box Groq + 22-font matcher picks best. Arial etc.: forces that family.</div>
                 </div>
 
                 <div class="control-group">
@@ -549,7 +563,16 @@
                     'Verdana':'Verdana, sans-serif',
                     'Calibri':'Calibri, sans-serif',
                     'Montserrat':'Montserrat, sans-serif',
-                    'NotoSans':'"Noto Sans", sans-serif'
+                    'NotoSans':'"Noto Sans", sans-serif',
+                    'TimesNewRoman':'"Times New Roman", Times, serif',
+                    'Aptos':'Aptos, sans-serif',
+                    'CourierNew':'"Courier New", Courier, monospace',
+                    'MyriadPro':'"Myriad Pro", sans-serif',
+                    'Cambria':'Cambria, serif',
+                    'CambriaMath':'"Cambria Math", Cambria, serif',
+                    'SegoeUIHistoric':'"Segoe UI Historic", sans-serif',
+                    'Symbol':'Symbol, serif',
+                    'Windings':'Windings, sans-serif'
                 };
                 area.style.fontFamily = famMap[item.fontFamily] || famMap['ArialMT'] || 'Arial, sans-serif';
 
@@ -624,51 +647,29 @@
                 return;
             }
             if (typeof agPsd === 'undefined' || !agPsd.writePsd) {
-                showStatus('✗ PSD engine not loaded (ag-psd). Check internet or use offline fallback. Downloading JSON instead.', 'error');
-                const fallback = { width: fullResCanvas.width, height: fullResCanvas.height, image: originalDataURL, elements: ocrData, filename: originalFileNameBase + '.psd', note: 'ag-psd not loaded' };
+                showStatus('✗ PSD engine loading... Please wait 2 seconds or check internet connection.', 'error');
+                const fallback = { width: fullResCanvas.width, height: fullResCanvas.height, image: originalDataURL, elements: ocrData, filename: originalFileNameBase + '.psd', note: 'ag-psd loading' };
                 downloadJSON(fallback, originalFileNameBase);
                 return;
             }
-            setLoading(true, 'Creating PSD...', 'Original Image in front + ' + ocrData.length + ' text frames behind');
+            setLoading(true, 'Creating PSD Binary File...', 'Layer 1: Original Background • Layers 2-' + (ocrData.length + 1) + ': Editable Text Frames');
             try {
                 const selectedFont = document.getElementById('fontFamily').value;
-
-                // Prepare background canvas (must be the FULL-RES original, not scaled)
-                // fullResCanvas already holds lossless PNG
                 const W = fullResCanvas.width, H = fullResCanvas.height;
                 const psdLayers = [];
-                // Original Image in front (top) – per user request: only original image, no extra background method, image covers text
-                psdLayers.push({
-                    name: "Original Image",
-                    canvas: fullResCanvas,
-                    left: 0, top: 0, right: W, bottom: H,
-                    opacity: 1,
-                    blendMode: 'normal',
-                    hidden: false
-                });
 
-                // Photoshop 2026 requires proper PostScript font names; map dropdown to PS names
                 const psFontMap = {
-                    'ArialMT': 'ArialMT',
-                    'Helvetica': 'ArialMT', // fallback, Helvetica not on Windows
-                    'HelveticaNeue': 'ArialMT',
-                    'SFProDisplay': 'ArialMT',
-                    'Inter': 'ArialMT',
-                    'Roboto': 'Roboto-Regular',
-                    'Poppins': 'Poppins-Regular',
-                    'Ubuntu': 'Ubuntu',
-                    'OpenSans': 'OpenSans',
-                    'SegoeUI': 'SegoeUI',
-                    'Tahoma': 'Tahoma',
-                    'Verdana': 'Verdana',
-                    'Calibri': 'Calibri',
-                    'Montserrat': 'Montserrat-Regular',
-                    'NotoSans': 'NotoSans'
+                    'ArialMT': 'ArialMT', 'Helvetica': 'ArialMT', 'HelveticaNeue': 'ArialMT', 'SFProDisplay': 'ArialMT',
+                    'Inter': 'ArialMT', 'Roboto': 'Roboto-Regular', 'Poppins': 'Poppins-Regular', 'Ubuntu': 'Ubuntu',
+                    'OpenSans': 'OpenSans', 'SegoeUI': 'SegoeUI', 'Tahoma': 'Tahoma', 'Verdana': 'Verdana',
+                    'Calibri': 'Calibri', 'Montserrat': 'Montserrat-Regular', 'NotoSans': 'NotoSans',
+                    'TimesNewRoman': 'TimesNewRomanPSMT', 'Aptos': 'Aptos', 'CourierNew': 'CourierNewPSMT',
+                    'MyriadPro': 'MyriadPro-Regular', 'Cambria': 'Cambria', 'CambriaMath': 'CambriaMath',
+                    'SegoeUIHistoric': 'SegoeUIHistoric', 'Symbol': 'SymbolMT', 'Windings': 'Wingdings-Regular'
                 };
                 const justifyMapStr = { left: 'left', right: 'right', center: 'center', justify: 'justify' };
 
-                // Each OCR item -> editable text layer with perfect typography
-                // Text layers first (top of stack), background last (bottom) – PS order is top-to-bottom
+                // 1. Add Editable Text Layers (Placing text layers FIRST so they stay on top in Photoshop)
                 ocrData.forEach((item, idx) => {
                     let fontFamRaw = (selectedFont && selectedFont !== 'AUTO') ? selectedFont : (item.fontFamily || 'ArialMT');
                     const fontFam = psFontMap[fontFamRaw] || 'ArialMT';
@@ -676,26 +677,22 @@
                     const lineHt = Math.round(item.lineHeight || Math.round(fontSize * 1.15));
                     const justificationStr = justifyMapStr[item.alignment] || 'left';
 
-                    // Baseline: ascent ≈ 0.78*fontSize, clamp to stay inside bounds +2px for descenders
                     const ascent = Math.round(fontSize * 0.78);
                     let baselineY = Math.round(item.y + ascent);
-                    // Clamp with padding for descenders/overflow (prevents PS clip → invisible)
                     let left = Math.max(0, Math.round(item.x));
                     let top = Math.max(0, Math.round(item.y));
-                    // Add 6px width padding and 8px height padding for PS 2026 paragraph bounds
                     let right = Math.min(W, Math.round(item.x + item.w + 6));
                     let bottom = Math.min(H, Math.round(item.y + item.h + 8));
                     if (right <= left) right = Math.min(W, left + Math.max(16, item.w + 6));
                     if (bottom <= top) bottom = Math.min(H, top + Math.max(18, item.h + 8));
-                    // Ensure baseline inside layer with descender room
-                    if (baselineY < top + Math.round(fontSize*0.6)) baselineY = top + Math.round(fontSize*0.78);
-                    if (baselineY > bottom - 6) baselineY = bottom - 6;
+                    if (baselineY < top + Math.round(fontSize * 0.6)) baselineY = top + Math.round(fontSize * 0.78);
+                    if (baselineY > bottom - 4) baselineY = bottom - 4;
 
                     const weight = item.fontWeight || 400;
                     const isBold = weight >= 600;
                     const isItalic = (item.fontStyle === 'italic');
-
                     const rgb = hexToRgb(item.color || '#222222');
+
                     const styleObj = {
                         fontSize: fontSize,
                         fillColor: { r: rgb.r, g: rgb.g, b: rgb.b, a: 255 },
@@ -720,7 +717,6 @@
                                 justification: justificationStr,
                                 leading: lineHt
                             },
-                            warp: { style: 'none', value: 0, perspective: 0, perspectiveOther: 0, rotate: 'horizontal' },
                             orientation: 'horizontal',
                             antiAlias: 'sharp'
                         },
@@ -729,7 +725,16 @@
                     });
                 });
 
-                // PSD with Original Image in front (top) and Text behind – per user request (no extra background)
+                // 2. Add Original Image Background Layer (Placed LAST so it sits behind text layers)
+                psdLayers.push({
+                    name: "Original Image",
+                    canvas: fullResCanvas,
+                    left: 0, top: 0, right: W, bottom: H,
+                    opacity: 1,
+                    blendMode: 'normal',
+                    hidden: false
+                });
+
                 const psd = {
                     width: W,
                     height: H,
@@ -738,50 +743,63 @@
                     children: psdLayers
                 };
 
-                // Write PSD via ag-psd (client-side, preserves editable text) – invalidateTextLayers forces PS 2026 to redraw
                 let buf;
                 try {
-                    buf = agPsd.writePsd(psd, { generateThumbnail: true, invalidateTextLayers: true });
-                } catch (e) {
-                    console.error('ag-psd write failed', e);
-                    throw new Error('PSD engine error: ' + e.message + ' – downloading JSON manifest instead');
+                    buf = agPsd.writePsd(psd, { generateThumbnail: true });
+                } catch (e1) {
+                    console.warn('agPsd writePsd attempt 1 failed, retrying with Arial font fallback:', e1);
+                    // Fallback font fix if custom font caused agPsd encode error
+                    psdLayers.forEach(l => {
+                        if (l.text && l.text.style) {
+                            l.text.style.font = { name: 'ArialMT' };
+                        }
+                    });
+                    buf = agPsd.writePsd(psd, { generateThumbnail: true });
                 }
 
                 const blob = new Blob([buf], { type: 'application/x-photoshop' });
+
+                // 1. Try native Windows "Save As" file picker dialog
+                if (window.showSaveFilePicker) {
+                    try {
+                        const handle = await window.showSaveFilePicker({
+                            suggestedName: `${originalFileNameBase || 'Image_to_PSD'}.psd`,
+                            types: [{
+                                description: 'Photoshop Document (*.psd)',
+                                accept: { 'application/x-photoshop': ['.psd'] }
+                            }]
+                        });
+                        const writable = await handle.createWritable();
+                        await writable.write(blob);
+                        await writable.close();
+                        showStatus(`✓ PSD Saved Successfully: ${W}×${H}px • ${ocrData.length} editable text layers!`, 'success');
+                        return;
+                    } catch (err) {
+                        if (err.name === 'AbortError') {
+                            showStatus('Save operation cancelled.', 'info');
+                            return;
+                        }
+                        console.warn('showSaveFilePicker failed, falling back:', err);
+                    }
+                }
+
+                // 2. Fallback download link
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `${originalFileNameBase}.psd`;
+                a.download = `${originalFileNameBase || 'Image_to_PSD'}.psd`;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-                setTimeout(()=> URL.revokeObjectURL(url), 5000);
+                setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-                showStatus(`✓ PSD exported: ${W}×${H}px • ${ocrData.length} text frames behind Original Image • ${originalFileNameBase}.psd`, 'success');
-
-                // Also notify backend (optional manifest)
-                try {
-                    fetch('/api/export-psd', {
-                        method:'POST',
-                        headers:{'Content-Type':'application/json'},
-                        body: JSON.stringify({ elements: ocrData, image: originalDataURL, font: selectedFont, width: fullResCanvas.width, height: fullResCanvas.height })
-                    });
-                } catch(_){}
+                showStatus(`✓ PSD Exported Successfully: ${W}×${H}px • ${ocrData.length} editable text layers!`, 'success');
             } catch (e) {
-                console.error(e);
-                showStatus('✗ Export fallback: ' + e.message, 'error');
-                // Fallback JSON download so user never loses work
-                const fallback = {
-                    width: fullResCanvas ? fullResCanvas.width : 0,
-                    height: fullResCanvas ? fullResCanvas.height : 0,
-                    image: originalDataURL,
-                    elements: ocrData,
-                    font: document.getElementById('fontFamily').value,
-                    note: 'Background untouched; text frames only'
-                };
-                downloadJSON(fallback);
+                console.error('Export PSD failure:', e);
+                showStatus('✗ Export PSD Failed: ' + e.message, 'error');
+            } finally {
+                setLoading(false);
             }
-            setLoading(false);
         }
 
         function downloadJSON(data, baseName) {

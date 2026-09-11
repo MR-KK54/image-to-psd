@@ -5,8 +5,9 @@ Advanced OCR with EasyOCR + Tesseract + Perfect Typography Matching
 - Text only: editable frames with fontSize, lineHeight, letterSpacing, alignment, weight, style
 """
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
+import sys
 import warnings
 import cv2
 import numpy as np
@@ -18,10 +19,18 @@ import math
 from PIL import Image, ImageFont, ImageDraw
 from pathlib import Path
 import json
+
+# Handle PyInstaller frozen environment path
+if getattr(sys, 'frozen', False):
+    BUNDLE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+else:
+    BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Load .env for GROQ_API_KEY
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(os.path.join(BUNDLE_DIR, '.env'))
+    load_dotenv(os.path.join(os.getcwd(), '.env'))
 except ImportError:
     pass
 # Groq matcher (optional)
@@ -98,8 +107,15 @@ TESSERACT_OK = configure_tesseract()
 if HAS_TESSERACT and not TESSERACT_OK:
     print("Tesseract binary not found. Install Tesseract-OCR and add it to PATH.")
 
-app = Flask(__name__)
+template_dir = os.path.join(BUNDLE_DIR, 'templates')
+static_dir = os.path.join(BUNDLE_DIR, 'static')
+app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 CORS(app)
+
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    assets_dir = os.path.join(BUNDLE_DIR, 'assets')
+    return send_from_directory(assets_dir, filename)
 
 # Store OCR reader (initialize once)
 ocr_reader = None
@@ -162,13 +178,29 @@ _RAW_CANDIDATE_FONTS = [
     ("Montserrat", r"C:\Windows\Fonts\Montserrat-Regular.ttf"),
     ("Helvetica", r"C:\Windows\Fonts\helvetica.ttf"),
     ("Inter", r"C:\Windows\Fonts\Inter-Regular.ttf"),
-    ("Inter", r"D:\Kishore projects\Image to PSD\assets\fonts\Inter-Regular.ttf"),
+    ("Inter", os.path.join(BUNDLE_DIR, "assets", "fonts", "Inter-Regular.ttf")),
     ("Poppins", r"C:\Windows\Fonts\Poppins-Regular.ttf"),
-    ("Poppins", r"D:\Kishore projects\Image to PSD\assets\fonts\Poppins-Regular.ttf"),
+    ("Poppins", os.path.join(BUNDLE_DIR, "assets", "fonts", "Poppins-Regular.ttf")),
     ("NotoSans", r"C:\Windows\Fonts\NotoSans-Regular.ttf"),
-    ("NotoSans", r"D:\Kishore projects\Image to PSD\assets\fonts\NotoSans-Regular.ttf"),
+    ("NotoSans", os.path.join(BUNDLE_DIR, "assets", "fonts", "NotoSans-Regular.ttf")),
     ("Arial", r"C:\Windows\Fonts\arial.ttf"),
     ("Calibri", r"C:\Windows\Fonts\calibri.ttf"),
+    ("TimesNewRoman", r"C:\Windows\Fonts\times.ttf"),
+    ("TimesNewRoman", r"C:\Windows\Fonts\TimesNewRomanPSMT.otf"),
+    ("Aptos", r"C:\Windows\Fonts\Aptos.ttf"),
+    ("CourierNew", r"C:\Windows\Fonts\cour.ttf"),
+    ("MyriadPro", r"C:\Windows\Fonts\MyriadPro-Regular.otf"),
+    ("MyriadPro", r"C:\Windows\Fonts\MYRIADPRO-REGULAR.OTF"),
+    ("Cambria", r"C:\Windows\Fonts\cambria.ttc"),
+    ("Cambria", r"C:\Windows\Fonts\cambria.ttc"),
+    ("Symbol", r"C:\Windows\Fonts\symbol.ttf"),
+    ("Symbol", r"C:\Windows\Fonts\Symbol Regular.ttf"),
+    ("CambriaMath", r"C:\Windows\Fonts\cambria.ttc"),
+    ("SegoeUIHistoric", r"C:\Windows\Fonts\seguihis.ttf"),
+    ("Windings", r"C:\Windows\Fonts\wingding.ttf"),
+    ("Windings", r"C:\Windows\Fonts\WINGDNG2.TTF"),
+    ("Windings", r"C:\Windows\Fonts\WINGDNG3.TTF"),
+    ("Webdings", r"C:\Windows\Fonts\webdings.ttf"),
 ]
 CANDIDATE_FONTS = [(name, path) for name, path in _RAW_CANDIDATE_FONTS if os.path.exists(path)]
 # Ensure at least SANS_FONT_PATH is in list
@@ -257,7 +289,10 @@ def get_ocr_reader():
                 'ignore',
                 message='.*quantize_per_tensor.*|.*quantize_per_channel.*'
             )
-            ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+            easyocr_model_dir = os.path.join(BUNDLE_DIR, 'easyocr_models')
+            if not os.path.exists(easyocr_model_dir):
+                easyocr_model_dir = None
+            ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False, model_storage_directory=easyocr_model_dir)
         print("EasyOCR reader ready.")
     return ocr_reader
 
@@ -697,6 +732,20 @@ def estimate_font_weight_and_style(image, bbox):
     except Exception:
         return 400, 'normal'
 
+def heuristic_alignment(x, w, W):
+    """Helper: deterministic left/center/right from geometry."""
+    cx = x + w/2
+    img_cx = W / 2
+    left_dist = x
+    right_dist = W - (x + w)
+    center_tolerance = max(15, W * 0.03)
+    if abs(cx - img_cx) < center_tolerance and abs(left_dist - right_dist) < center_tolerance*1.5:
+        return 'center'
+    elif right_dist < 20 and left_dist > 40:
+        return 'right'
+    else:
+        return 'left'
+
 def detect_alignment_and_spacing(elements, image_width, image_height):
     """
     For each element compute alignment (left/center/right) and letterSpacing.
@@ -708,20 +757,8 @@ def detect_alignment_and_spacing(elements, image_width, image_height):
     # Sort by y then x
     elements = sorted(elements, key=lambda e: (e['y'], e['x']))
     # Determine alignment per element
-    # Heuristic: relative to image width
     for e in elements:
-        cx = e['x'] + e['w']/2
-        img_cx = image_width / 2
-        left_dist = e['x']
-        right_dist = image_width - (e['x'] + e['w'])
-        # Center if middle within tolerance
-        center_tolerance = max(15, image_width * 0.03)
-        if abs(cx - img_cx) < center_tolerance and abs(left_dist - right_dist) < center_tolerance*1.5:
-            e['alignment'] = 'center'
-        elif right_dist < 20 and left_dist > 40:
-            e['alignment'] = 'right'
-        else:
-            e['alignment'] = 'left'
+        e['alignment'] = heuristic_alignment(e['x'], e['w'], image_width)
         # Justify detection: full-width lines with distributed gaps (rare in mobile)
         # keep as left for now
         if e['w'] > image_width * 0.75 and e['text'].count(' ') >= 3:
@@ -1150,25 +1187,52 @@ def correct_text():
             # Call auto correction (vision if image provided, else text-only)
             # image_b64 may be data URI or raw base64; pass through
             corrected = correct_auto(elements, image_b64=image_b64, api_key=api_key, model=model)
-            # Re-fit size after text changed (size-only 80-100%)
+            # Re-fit size after text changed (size-only 80-100%) + expand box for PS to avoid clip
             try:
                 for e in corrected:
-                    # re-estimate size for new text within same bbox, keep original w/h
                     new_text = e.get('text','')
                     orig = next((o for o in elements if abs(o['x']-e['x'])<1 and abs(o['y']-e['y'])<1), e)
                     w = orig.get('w', e['w']); h = orig.get('h', e['h'])
-                    path = orig.get('fontPath') or e.get('fontPath') or SANS_FONT_PATH
-                    # need fontPath from original enrich – fallback to SANS
-                    # try to find candidate path via fontFamily
                     fam = e.get('fontFamily', 'ArialMT')
-                    # find path for fam
                     cand_path = next((p for n,p in CANDIDATE_FONTS if n==fam), SANS_FONT_PATH)
                     fs = estimate_font_size(new_text, w, h, font_path=cand_path)
                     e['fontSize'] = float(round(fs,2))
-                    # keep lineHeight, color etc already perfect, just ensure letterSpacing 0
                     e['letterSpacing'] = 0.0
+                    # Expand w/h to fit new text at new size (for PS 2026 paragraph bounds)
+                    try:
+                        ft = ImageFont.truetype(cand_path, int(round(fs)))
+                        bbox = ft.getbbox(new_text)
+                        tw = bbox[2]-bbox[0]
+                        th = bbox[3]-bbox[1]
+                        # Keep original x/y, grow right/bottom with padding to contain tw/th
+                        e['w'] = float(max(w, tw + 6))
+                        e['h'] = float(max(h, th + 8))
+                    except:
+                        pass
             except Exception as ex:
                 print(f"Re-fit after Groq auto failed: {ex}")
+            # Validate Groq alignment against heuristic – keep heuristic if Groq misclassifies center/right
+            try:
+                W_est = max(int(e['x']+e['w']) for e in corrected) if corrected else 800
+                if image_b64 and "," in image_b64:
+                    try:
+                        import base64 as b64m
+                        from PIL import Image as PILImage
+                        import io as bio
+                        b64data = image_b64.split(",",1)[1]
+                        im = PILImage.open(bio.BytesIO(b64m.b64decode(b64data)))
+                        W_est = im.size[0]
+                    except: pass
+                for e in corrected:
+                    heu = heuristic_alignment(e['x'], e['w'], W_est)
+                    if e.get('alignment') != heu:
+                        if heu == 'center' and e.get('alignment') == 'left':
+                            if abs((e['x']+e['w']/2) - W_est/2) < max(15, W_est*0.03):
+                                e['alignment'] = heu
+                        elif heu == 'right' and e.get('alignment') == 'left':
+                            if W_est - (e['x']+e['w']) < 20 and e['x'] > 40:
+                                e['alignment'] = heu
+            except: pass
             return jsonify({
                 'success': True,
                 'elements': corrected,
@@ -1189,11 +1253,10 @@ def correct_text():
             })
         # call Groq with target
         corrected = correct_with_groq(elements, target_text, api_key=api_key, model=model)
-        # Re-fit size after Groq (text may be longer)
+        # Re-fit size after Groq (text may be longer) + expand box + validate alignment
         try:
             for e in corrected:
                 new_text = e.get('text','')
-                # find original bbox for w/h
                 orig = next((o for o in elements if o['x']==e['x'] and o['y']==e['y']), None)
                 if orig:
                     w = orig['w']; h = orig['h']
@@ -1204,6 +1267,28 @@ def correct_text():
                 fs = estimate_font_size(new_text, w, h, font_path=cand_path)
                 e['fontSize'] = float(round(fs,2))
                 e['letterSpacing'] = 0.0
+                try:
+                    ft = ImageFont.truetype(cand_path, int(round(fs)))
+                    bbox = ft.getbbox(new_text)
+                    tw = bbox[2]-bbox[0]
+                    th = bbox[3]-bbox[1]
+                    e['w'] = float(max(w, tw + 6))
+                    e['h'] = float(max(h, th + 8))
+                except:
+                    pass
+            # Validate Groq alignment vs heuristic – keep heuristic if Groq misclassifies center/right
+            try:
+                W_est = max(int(e['x']+e['w']) for e in corrected) if corrected else 800
+                for e in corrected:
+                    heu = heuristic_alignment(e['x'], e['w'], W_est)
+                    if e.get('alignment') != heu:
+                        if heu == 'center' and e.get('alignment') == 'left':
+                            if abs((e['x']+e['w']/2) - W_est/2) < max(15, W_est*0.03):
+                                e['alignment'] = heu
+                        elif heu == 'right' and e.get('alignment') == 'left':
+                            if W_est - (e['x']+e['w']) < 20 and e['x'] > 40:
+                                e['alignment'] = heu
+            except: pass
         except Exception as ex:
             print(f"Re-fit after Groq failed: {ex}")
         return jsonify({
@@ -1240,11 +1325,10 @@ def auto_correct():
             return jsonify({'error': 'GROQ_API_KEY not set in .env – cannot auto-correct without LLM. Add key or paste targetText for positional fallback.'}), 400
         # Call auto correction (vision if image provided)
         corrected = correct_auto(elements, image_b64=image_b64, api_key=api_key, model=model)
-        # Re-fit size after correction (same as /api/correct)
+        # Re-fit size after correction + expand box for PS (same as /api/correct)
         try:
             for e in corrected:
                 new_text = e.get('text','')
-                # find original w/h by matching x,y
                 orig = next((o for o in elements if abs(o['x']-e['x'])<1 and abs(o['y']-e['y'])<1), None)
                 w = orig['w'] if orig else e['w']
                 h = orig['h'] if orig else e['h']
@@ -1253,6 +1337,15 @@ def auto_correct():
                 fs = estimate_font_size(new_text, w, h, font_path=cand_path)
                 e['fontSize'] = float(round(fs,2))
                 e['letterSpacing'] = 0.0
+                try:
+                    ft = ImageFont.truetype(cand_path, int(round(fs)))
+                    bbox = ft.getbbox(new_text)
+                    tw = bbox[2]-bbox[0]
+                    th = bbox[3]-bbox[1]
+                    e['w'] = float(max(w, tw + 6))
+                    e['h'] = float(max(h, th + 8))
+                except:
+                    pass
         except Exception as ex:
             print(f"Re-fit after auto failed: {ex}")
         return jsonify({
@@ -1318,13 +1411,32 @@ def detect_with_groq():
         for e in elements:
             e['x']=float(round(e['x'],2)); e['y']=float(round(e['y'],2)); e['w']=float(round(e['w'],2)); e['h']=float(round(e['h'],2))
             e.pop('bbox',None); e.pop('avg_height',None)
-        # Groq handling: manual target or auto-detect (no paste)
+        # Groq handling: manual target or auto-detect (no paste) – re-fit w/h for PS
         groq_used = False
         if use_groq and GROQ_API_KEY:
             if target_text and target_text.strip():
                 try:
                     elements = correct_with_groq(elements, target_text, api_key=GROQ_API_KEY)
                     groq_used = True
+                    # Re-fit after manual target (text may be longer)
+                    for ec in elements:
+                        try:
+                            fam = ec.get('fontFamily','ArialMT')
+                            cand_path = next((p for n,p in CANDIDATE_FONTS if n==fam), SANS_FONT_PATH)
+                            # use enriched w/h as base, expand if needed
+                            w0, h0 = ec['w'], ec['h']
+                            fs = estimate_font_size(ec.get('text',''), w0, h0, font_path=cand_path)
+                            ec['fontSize'] = float(round(fs,2))
+                            ec['letterSpacing'] = 0.0
+                            try:
+                                ft = ImageFont.truetype(cand_path, int(round(fs)))
+                                bbox = ft.getbbox(ec.get('text',''))
+                                tw = bbox[2]-bbox[0]
+                                th = bbox[3]-bbox[1]
+                                ec['w'] = float(max(w0, tw + 6))
+                                ec['h'] = float(max(h0, th + 8))
+                            except: pass
+                        except: pass
                 except Exception as e:
                     print(f"Groq fit failed, returning OCR only: {e}")
             else:
@@ -1335,17 +1447,37 @@ def detect_with_groq():
                     b64 = b64mod.b64encode(buf).decode()
                     b64_data = f"data:image/png;base64,{b64}"
                     elements = correct_auto(elements, image_b64=b64_data, api_key=GROQ_API_KEY)
-                    # Re-fit size after auto text changes
+                    # Re-fit size after auto text changes + expand box
                     for ec in elements:
                         try:
-                            # find original w/h by closest y
-                            # use enriched w/h already, just re-estimate
                             fam = ec.get('fontFamily','ArialMT')
                             cand_path = next((p for n,p in CANDIDATE_FONTS if n==fam), SANS_FONT_PATH)
-                            fs = estimate_font_size(ec.get('text',''), ec['w'], ec['h'], font_path=cand_path)
+                            w0, h0 = ec['w'], ec['h']
+                            fs = estimate_font_size(ec.get('text',''), w0, h0, font_path=cand_path)
                             ec['fontSize'] = float(round(fs,2))
                             ec['letterSpacing'] = 0.0
+                            try:
+                                ft = ImageFont.truetype(cand_path, int(round(fs)))
+                                bbox = ft.getbbox(ec.get('text',''))
+                                tw = bbox[2]-bbox[0]
+                                th = bbox[3]-bbox[1]
+                                ec['w'] = float(max(w0, tw + 6))
+                                ec['h'] = float(max(h0, th + 8))
+                            except: pass
                         except: pass
+                    # Validate alignment for Groq auto (detect-with-groq)
+                    try:
+                        W_est2 = width
+                        for ec in elements:
+                            heu2 = heuristic_alignment(ec['x'], ec['w'], W_est2)
+                            if ec.get('alignment') != heu2:
+                                if heu2 == 'center' and ec.get('alignment') == 'left':
+                                    if abs((ec['x']+ec['w']/2) - W_est2/2) < max(15, W_est2*0.03):
+                                        ec['alignment'] = heu2
+                                elif heu2 == 'right' and ec.get('alignment') == 'left':
+                                    if W_est2 - (ec['x']+ec['w']) < 20 and ec['x'] > 40:
+                                        ec['alignment'] = heu2
+                    except: pass
                     groq_used = True
                 except Exception as e:
                     print(f"Groq auto failed, returning OCR only: {e}")
@@ -1389,43 +1521,95 @@ def health():
 
 if __name__ == '__main__':
     # Ensure templates directory exists
-    os.makedirs('templates', exist_ok=True)
+    try:
+        os.makedirs(template_dir, exist_ok=True)
+    except Exception:
+        pass
 
-    # Warm up the OCR model at startup so the (potentially long) model load /
-    # download happens here instead of on the user's first click.
+    # Warm up the OCR model at startup
     if HAS_EASYOCR:
         try:
             get_ocr_reader()
         except Exception as e:
             print("Warning: EasyOCR failed to initialize:", e)
 
-    print("Starting Image to PSD Converter Server...")
-    print("Access at: http://localhost:5000  (also http://127.0.0.1:5000)")
-    print("If port 5000 is busy, try: python app.py --port 5001")
-    print("Make sure to install requirements: pip install -r requirements.txt")
-    print("")
-    print("WAIT for 'Running on http://127.0.0.1:5000' before opening browser")
-    print("(EasyOCR model loads ~10-20s on first start)")
-
-    # Allow custom port via command line: python app.py --port 5001
-    import argparse, sys
+    import argparse, sys, threading, time
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5000, help='Port to run on')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind (0.0.0.0 = all interfaces, localhost & 127.0.0.1)')
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host to bind')
+    parser.add_argument('--server-only', action='store_true', help='Run server only without GUI window')
     args, _ = parser.parse_known_args()
-    # Also support env var PORT
+
     port = int(os.environ.get('PORT', args.port))
     host = args.host
 
-    # Try to handle port already in use gracefully
-    try:
-        # use_reloader=False avoids loading the (heavy) model twice under debug,
-        # and threaded=True keeps the server responsive while OCR runs.
-        # host 127.0.0.1 ensures localhost works; use 0.0.0.0 if you need LAN access
-        app.run(debug=False, host=host, port=port, use_reloader=False, threaded=True)
-    except OSError as e:
-        if "Address already in use" in str(e) or "WinError 10048" in str(e):
-            print(f"Port {port} already in use! Trying {port+1}...")
-            app.run(debug=False, host=host, port=port+1, use_reloader=False, threaded=True)
-        else:
-            raise
+    def start_flask():
+        try:
+            app.run(debug=False, host=host, port=port, use_reloader=False, threaded=True)
+        except OSError as e:
+            if "Address already in use" in str(e) or "WinError 10048" in str(e):
+                app.run(debug=False, host=host, port=port + 1, use_reloader=False, threaded=True)
+
+    def launch_desktop_app_window(url):
+        import subprocess, shutil, webbrowser
+        
+        # 1. Try pywebview
+        try:
+            import webview
+            window = webview.create_window(
+                title='Image to PSD Converter',
+                url=url,
+                width=1366,
+                height=860,
+                resizable=True,
+                min_size=(900, 600)
+            )
+            webview.start()
+            return
+        except Exception as e:
+            print("pywebview launch failed, trying Edge App mode:", e)
+
+        # 2. Try MS Edge --app mode (Chromeless native window)
+        edge_paths = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            shutil.which("msedge")
+        ]
+        for ep in edge_paths:
+            if ep and os.path.exists(ep):
+                user_data = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'ImageToPSD_AppProfile')
+                cmd = [ep, f'--app={url}', f'--user-data-dir={user_data}', '--window-size=1366,860']
+                proc = subprocess.Popen(cmd)
+                proc.wait()
+                return
+
+        # 3. Try Chrome --app mode
+        chrome_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            shutil.which("chrome")
+        ]
+        for cp in chrome_paths:
+            if cp and os.path.exists(cp):
+                user_data = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'ImageToPSD_AppProfile')
+                cmd = [cp, f'--app={url}', f'--user-data-dir={user_data}', '--window-size=1366,860']
+                proc = subprocess.Popen(cmd)
+                proc.wait()
+                return
+
+        # 4. Standard Browser Fallback
+        webbrowser.open(url)
+
+    if args.server_only:
+        print("Starting Image to PSD Server...")
+        start_flask()
+    else:
+        # Start server in background thread
+        server_thread = threading.Thread(target=start_flask, daemon=True)
+        server_thread.start()
+        time.sleep(0.6)
+
+        # Launch desktop app window
+        print("Launching Image to PSD Desktop Application Window...")
+        launch_desktop_app_window(f'http://127.0.0.1:{port}')
+        sys.exit(0)
