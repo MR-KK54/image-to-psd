@@ -384,98 +384,95 @@
 
         async function detectAndExtract() {
             if (!currentImage) return;
-            // Helpful check: must be served via http, not file://
-            if (location.protocol === 'file:') {
-                showStatus('✗ Open via http://localhost:5000 or http://127.0.0.1:5000 – not by double-clicking the HTML file. Run RUN_SERVER.bat first.', 'error');
+
+            const isGitHubPages = location.hostname.includes('github.io');
+
+            // On GitHub Pages (static hosting), run Tesseract.js client-side OCR directly
+            if (isGitHubPages) {
+                setLoading(true, 'Running Client-Side OCR...', 'Tesseract.js – GitHub Pages Mode');
+                detectBtn.disabled = true;
+                try {
+                    const res = await fallbackTesseractDetect();
+                    ocrData = res.elements || [];
+                    renderBoxes();
+                    exportBtn.disabled = ocrData.length === 0;
+                    showStatus(`✓ Detected ${res.count} text frames via ${res.engine}`, 'success');
+                } catch (err) {
+                    showStatus('✗ Detection error: ' + err.message, 'error');
+                } finally {
+                    detectBtn.disabled = false;
+                    setLoading(false);
+                }
                 return;
             }
+
+            // Otherwise, run Python server /api/detect
             setLoading(true, 'Sending to Python OCR...', 'Using Tesseract/EasyOCR + typography analysis');
             detectBtn.disabled = true;
             try {
                 const formData = new FormData();
-                // Prefer original file bytes (perfect fidelity) – fallback to fullResCanvas blob
                 if (originalFile) {
                     formData.append('image', originalFile, originalFile.name || 'image.png');
                 } else {
                     const blob = await new Promise(r => fullResCanvas.toBlob(r, 'image/png'));
                     formData.append('image', blob, 'image.png');
                 }
-                
-                setLoading(true, 'Running text detection...', 'Analyzing font size • line spacing • color • weight');
-                
+
                 const response = await fetch('/api/detect', {
                     method: 'POST',
                     body: formData,
                     cache: 'no-store'
                 });
-                
+
+                // Handle static hosting 405/404 status fallback
+                if (response.status === 405 || response.status === 404) {
+                    setLoading(true, 'Switching to Client-Side OCR...', 'Static server detected – using Tesseract.js');
+                    const res = await fallbackTesseractDetect();
+                    ocrData = res.elements || [];
+                    renderBoxes();
+                    exportBtn.disabled = ocrData.length === 0;
+                    showStatus(`✓ Detected ${res.count} text frames via ${res.engine}`, 'success');
+                    return;
+                }
+
                 let result;
                 const rawText = await response.text();
                 try { result = JSON.parse(rawText); } catch { result = null; }
-                
-                if (!response.ok) {
-                    const msg = (result && (result.error || result.detail)) ? `${result.error} ${result.detail||''}`.trim() : rawText;
-                    throw new Error(`Server ${response.status}: ${msg.slice(0,800)}`);
+
+                if (!response.ok || !result || !result.success) {
+                    throw new Error((result && (result.error || result.detail)) || `Server ${response.status}: ${rawText.slice(0, 300)}`);
                 }
-                
-                if (!result || !result.success) {
-                    throw new Error((result && (result.error || result.detail)) || 'Detection failed');
-                }
-                
+
                 ocrData = result.elements || [];
                 renderBoxes();
                 exportBtn.disabled = ocrData.length === 0;
-                
+
                 const e0 = ocrData[0];
                 const typographyNote = e0 ? ` • Font: ${e0.fontSize}px • Leading: ${e0.lineHeight}px • ${e0.fontWeight} ${e0.fontStyle}` : '';
                 showStatus(`✓ Detected ${result.count} text frames via ${result.engine}${typographyNote}`, 'success');
-                if (ocrData.length > 0) {
-                    setTimeout(()=> showStatus(`✓ Detected ${result.count} frames. Click any box to inspect typography. Then Export to PSD.`, 'success'), 3500);
-                }
-                // Auto Groq: if enabled, correct OCR + alignment to original image (no manual paste)
-                if (useGroq.checked && ocrData.length>0) {
+
+                if (useGroq.checked && ocrData.length > 0) {
                     if (groqStatus) {
                         groqStatus.style.display = 'block';
                         groqStatus.textContent = '🤖 Groq auto-correcting to original source...';
                     }
-                    setTimeout(()=> groqFit(), 800);
+                    setTimeout(() => groqFit(), 800);
                 }
             } catch (e) {
                 console.error(e);
-                let msg = e.message || String(e);
-                const isPages = location.hostname.includes('github.io');
-                const isFetchFail = msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed');
-                if (isFetchFail) {
-                    if (isPages) {
-                        // GitHub Pages has no Python server – fallback to offline Tesseract (same PSD structure)
-                        try {
-                            showStatus('⚠ No server on GitHub Pages – switching to offline Tesseract (same output)…', 'info');
-                            setLoading(true, 'Running offline OCR...', 'GitHub Pages mode – same PSD, no server');
-                            const result = await fallbackTesseractDetect();
-                            ocrData = result.elements || [];
-                            renderBoxes();
-                            exportBtn.disabled = ocrData.length === 0;
-                            if (typeof groqFit !== 'undefined' && useGroq && useGroq.checked && ocrData.length>0) {
-                                setTimeout(()=> groqFit(), 800);
-                            }
-                            const e0 = ocrData[0];
-                            const typNote = e0 ? ` • Font: ${e0.fontSize.toFixed(1)}px` : '';
-                            showStatus(`✓ Detected ${result.count} frames via ${result.engine}${typNote} (offline)`, 'success');
-                            setLoading(false);
-                            detectBtn.disabled = false;
-                            return;
-                        } catch (fallbackErr) {
-                            console.error('fallback failed', fallbackErr);
-                            msg = 'Offline fallback also failed: ' + (fallbackErr.message || fallbackErr) + ' | Original: ' + msg;
-                        }
-                    }
-                    msg = 'Failed to fetch – is the Python server running? 1) Keep the black/minimized Python window open, 2) Open http://127.0.0.1:5000 (not file://), 3) Wait for "Running on http://0.0.0.0:5000", 4) Try RUN_SERVER.bat or: python app.py --port 5001. Details: ' + msg;
+                try {
+                    const res = await fallbackTesseractDetect();
+                    ocrData = res.elements || [];
+                    renderBoxes();
+                    exportBtn.disabled = ocrData.length === 0;
+                    showStatus(`✓ Detected ${res.count} text frames via ${res.engine} (Offline Fallback)`, 'success');
+                } catch (err2) {
+                    showStatus('✗ Detection error: ' + e.message, 'error');
                 }
-                showStatus('✗ Detection Error: ' + msg, 'error');
+            } finally {
                 detectBtn.disabled = false;
+                setLoading(false);
             }
-            setLoading(false);
-            detectBtn.disabled = false;
         }
 
         async function groqFit() {
