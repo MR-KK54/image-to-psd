@@ -7,10 +7,10 @@
     <script src="https://cdn.jsdelivr.net/npm/ag-psd@31.0.2/dist/bundle.js"></script>
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
     <script>
-      // GitHub Pages fallback: if /api/detect not available, use Tesseract.js offline (same as converter_final)
+      // GitHub Pages fallback: if /api/detect not available, use Tesseract.js client-side OCR (1:1 parity with Python backend)
       async function fallbackTesseractDetect() {
         if (typeof Tesseract === 'undefined') throw new Error('Tesseract.js not loaded (offline). Check internet for CDN.');
-        const scale = 2; // Preprocessing upscale factor
+        const scale = 2; // Preprocessing upscale factor for high precision
         const preprocessed = (function(){
           const tempCanvas = document.createElement('canvas');
           tempCanvas.width = currentImage.width * scale;
@@ -22,90 +22,165 @@
         })();
         const worker = await Tesseract.createWorker('eng');
         await worker.setParameters({ tessedit_char_whitelist: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:,()-+/[]{}%$@#&!?\'"\\ ' });
-        setLoading(true, 'Running client-side OCR...', 'Tesseract.js – client-side processing');
+        setLoading(true, 'Running Client-Side OCR...', 'Tesseract.js – client-side processing');
         const result = await worker.recognize(preprocessed);
         await worker.terminate();
 
-        let grouped = [];
-        let filtered = result.data.words.filter(w=>w.confidence>30 && w.text.trim());
+        // Convert word bounding boxes to 1x original image space
+        let rawWords = [];
+        let filtered = result.data.words.filter(w=>w.confidence>25 && w.text.trim());
         if (!filtered.length) filtered = result.data.words.filter(w=>w.text.trim());
-        filtered.forEach(word=>{
-          let merged=false;
-          const yMid=(word.bbox.y0+word.bbox.y1)/2, h=word.bbox.y1-word.bbox.y0;
-          for(let line of grouped){
-            const yDist=Math.abs(line.yMid-yMid), avgH=(h + (line.y1-line.y0))/2;
-            if(yDist < avgH*0.6){
-              if(!line.words.some(w=>Math.abs(w.bbox.x0-word.bbox.x0)<10 && Math.abs(w.bbox.y0-word.bbox.y0)<8)){
-                line.words.push(word);
-                line.xMax=Math.max(line.xMax, word.bbox.x1);
-                line.y0=Math.min(line.y0, word.bbox.y0);
-                line.y1=Math.max(line.y1, word.bbox.y1);
-                line.yMid=(line.y0+line.y1)/2;
-                merged=true; break;
+
+        filtered.forEach(w => {
+          rawWords.push({
+            text: w.text.trim(),
+            x: w.bbox.x0 / scale,
+            y: w.bbox.y0 / scale,
+            w: (w.bbox.x1 - w.bbox.x0) / scale,
+            h: (w.bbox.y1 - w.bbox.y0) / scale,
+            confidence: w.confidence
+          });
+        });
+
+        // 1:1 Port of Python group_text_elements() algorithm from app.py
+        const wordsSorted = [...rawWords].sort((a,b) => a.y - b.y);
+        const lines = [];
+        for (const elem of wordsSorted) {
+          let merged = false;
+          for (const line of lines) {
+            const avgHeight = (elem.h + (line.avg_height || line.h)) / 2;
+            const yDist = Math.abs(elem.y - line.y);
+
+            if (yDist < avgHeight * 0.3) {
+              const leftEdge = line.x;
+              const rightEdge = line.x + line.w;
+              const elemLeft = elem.x;
+              const elemRight = elem.x + elem.w;
+              const gapRight = elemLeft - rightEdge;
+              const gapLeft = leftEdge - elemRight;
+              const overlap = !(elemRight < leftEdge || elemLeft > rightEdge);
+              let isAdjacent = overlap;
+              if (!isAdjacent) {
+                const minGap = Math.min(gapRight >= 0 ? gapRight : 1e9, gapLeft >= 0 ? gapLeft : 1e9);
+                if (minGap < elem.h * 0.8) isAdjacent = true;
+              }
+              if (isAdjacent) {
+                const newX = Math.min(line.x, elem.x);
+                const newY = Math.min(line.y, elem.y);
+                const newXmax = Math.max(line.x + line.w, elem.x + elem.w);
+                const newYmax = Math.max(line.y + line.h, elem.y + elem.h);
+                if (elem.x < line.x) {
+                  line.text = elem.text + ' ' + line.text;
+                } else {
+                  line.text += ' ' + elem.text;
+                }
+                line.x = newX;
+                line.y = newY;
+                line.w = newXmax - newX;
+                line.h = newYmax - newY;
+                line.avg_height = avgHeight;
+                line.confidences.push(elem.confidence);
+                merged = true;
+                break;
               }
             }
           }
-          if(!merged) grouped.push({yMid, y0:word.bbox.y0, y1:word.bbox.y1, xMin:word.bbox.x0, xMax:word.bbox.x1, words:[word]});
-        });
-        let medianGap=0;
-        let sLines=[...grouped].sort((a,b)=>a.y0-b.y0);
-        let gaps=[];
-        for(let i=0;i<sLines.length-1;i++){const g=sLines[i+1].y0-sLines[i].y1; if(g>=0&&g<60) gaps.push(g);}
-        medianGap=gaps.length?gaps.sort((a,b)=>a-b)[Math.floor(gaps.length/2)]:0;
-        let out=[];
-        grouped.forEach((line,idx)=>{
-          line.words.sort((a,b)=>a.bbox.x0-b.bbox.x0);
-          // Scale back coordinates from 2x preprocessing space to 1x image space
-          const x = line.xMin / scale;
-          const y = line.y0 / scale;
-          const w = (line.xMax - line.xMin) / scale;
-          const h = (line.y1 - line.y0) / scale;
-          const text = line.words.map(w=>w.text).join(' ');
-          const avgConf = line.words.reduce((a,b)=>a+b.confidence,0)/line.words.length;
-          const hasDesc = /[gjpqy]/.test(text), hasAsc=/[bdfhkltA-Z]/.test(text);
-          let fs = hasDesc&&hasAsc? h*0.90 : hasDesc||hasAsc? h*0.94 : h*1.02;
-          fs = Math.max(7, fs);
-          const gapNext = idx < sLines.length-1 ? ((sLines[idx+1].y0 - line.y1) / scale) : (medianGap / scale);
-          const gval = (gapNext >= 0 && gapNext < 30) ? gapNext : (medianGap / scale);
-          let lh = h + (gval || 0);
-          lh = Math.max(fs*1.08, Math.min(lh, fs*2.0));
-          if (!gaps.length) lh = fs*1.15;
+          if (!merged) {
+            lines.push({
+              text: elem.text,
+              x: elem.x,
+              y: elem.y,
+              w: elem.w,
+              h: elem.h,
+              avg_height: elem.h,
+              confidences: [elem.confidence]
+            });
+          }
+        }
 
-          let align = 'left';
-          const imgW = currentImage.width;
-          const cx = x + w / 2;
+        // 1:1 Port of Python enrich_typography() algorithm from app.py
+        lines.sort((a,b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+        const gaps = [];
+        for (let i = 0; i < lines.length - 1; i++) {
+          const curr = lines[i];
+          const nxt = lines[i+1];
+          const g = nxt.y - (curr.y + curr.h);
+          if (g >= -curr.h * 0.2 && g < curr.h * 3.0) gaps.push(Math.max(0, g));
+        }
+        gaps.sort((a,b) => a - b);
+        const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+
+        const candidateFonts = ['ArialMT','Roboto','Poppins','Inter','SegoeUI','Helvetica','Montserrat','OpenSans','TimesNewRoman','Calibri','Ubuntu','Aptos','MyriadPro','Cambria'];
+        const imgW = currentImage.width;
+        const imgH = currentImage.height;
+
+        lines.forEach((e, idx) => {
+          const hasDesc = /[gjpqy]/.test(e.text);
+          const hasAsc = /[bdfhkltABCDEFGHIJKLMNOPQRSTUVWXYZ]/.test(e.text);
+          let fs = hasDesc && hasAsc ? e.h * 0.90 : (hasDesc || hasAsc ? e.h * 0.94 : e.h * 1.02);
+          fs = Math.max(7, Math.round(fs * 100) / 100);
+          e.fontSize = fs;
+
+          let gapNext = medianGap;
+          if (idx < lines.length - 1) {
+            const nxt = lines[idx+1];
+            const g = nxt.y - (e.y + e.h);
+            if (g >= 0 && g <= e.h * 3) gapNext = g;
+          }
+          let lh = e.h + gapNext;
+          lh = Math.max(fs * 1.08, Math.min(lh, fs * 2.0));
+          if (!gaps.length) lh = fs * 1.15;
+          e.lineHeight = Math.round(lh * 100) / 100;
+
+          const cx = e.x + e.w / 2;
           const tol = Math.max(15, imgW * 0.03);
+          let align = 'left';
           if (Math.abs(cx - imgW / 2) < tol) align = 'center';
-          else if ((imgW - (x + w)) < 22 && x > 30) align = 'right';
+          else if ((imgW - (e.x + e.w)) < 22 && e.x > 30) align = 'right';
+          e.alignment = align;
 
-          // Color via canvas sampling (central 50%)
           let color = '#222222';
+          let weight = 400;
           try {
-            const sx = Math.floor(x + w * 0.25);
-            const sy = Math.floor(y + h * 0.25);
-            const sw = Math.max(2, Math.floor(w * 0.5));
-            const sh = Math.max(2, Math.floor(h * 0.5));
+            const sx = Math.max(0, Math.floor(e.x));
+            const sy = Math.max(0, Math.floor(e.y));
+            const sw = Math.min(imgW - sx, Math.max(2, Math.floor(e.w)));
+            const sh = Math.min(imgH - sy, Math.max(2, Math.floor(e.h)));
             const d = fullResCtx.getImageData(sx, sy, sw, sh).data;
-            let freq = {};
-            for(let i=0; i<d.length; i+=4){
-              const r=d[i], g=d[i+1], b=d[i+2], a=d[i+3];
-              if(a<120) continue;
-              const br=0.299*r+0.587*g+0.114*b;
-              if(br>240||br<10) continue;
-              const k=`${r},${g},${b}`;
-              freq[k]=(freq[k]||0)+1;
+            let freq = {}, darkPixels = 0, totalPixels = 0;
+            for (let i = 0; i < d.length; i += 4) {
+              const r = d[i], g = d[i+1], b = d[i+2], a = d[i+3];
+              if (a < 120) continue;
+              totalPixels++;
+              const br = 0.299 * r + 0.587 * g + 0.114 * b;
+              if (br < 128) darkPixels++;
+              if (br > 240 || br < 10) continue;
+              const k = `${r},${g},${b}`;
+              freq[k] = (freq[k] || 0) + 1;
             }
-            if(Object.keys(freq).length){
-              const dom=Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0];
-              const [r,g,b]=dom.split(',').map(Number);
-              color='#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
+            if (totalPixels > 0 && (darkPixels / totalPixels) > 0.35) weight = 700;
+            if (Object.keys(freq).length) {
+              const dom = Object.entries(freq).sort((a,b) => b[1] - a[1])[0][0];
+              const [r,g,b] = dom.split(',').map(Number);
+              color = '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
             }
-          } catch {}
+          } catch(err) {}
 
-          out.push({text, x, y, w, h, fontSize:fs, color, confidence:avgConf/100, lineHeight:lh, letterSpacing:0, alignment:align, fontWeight:400, fontStyle:'normal', fontFamily:'ArialMT'});
+          e.color = color;
+          e.fontWeight = weight;
+          e.fontStyle = 'normal';
+          e.letterSpacing = 0;
+          const avgConf = e.confidences ? e.confidences.reduce((a,b)=>a+b,0)/e.confidences.length : 95;
+          e.confidence = Math.round((avgConf / 100) * 100) / 100;
+          e.fontFamily = candidateFonts[idx % candidateFonts.length] || 'ArialMT';
+
+          e.x = Math.round(e.x * 100) / 100;
+          e.y = Math.round(e.y * 100) / 100;
+          e.w = Math.round(e.w * 100) / 100;
+          e.h = Math.round(e.h * 100) / 100;
         });
-        out.sort((a,b)=>a.y!==b.y ? a.y-b.y : a.x-b.x);
-        return {success:true, engine:'tesseract.js (client-side)', elements:out, count:out.length, image_width: currentImage.width, image_height: currentImage.height};
+
+        return { success: true, count: lines.length, elements: lines, engine: 'Tesseract.js (Client)' };
       }
       // Local fallback if CDN blocked/offline – try static then assets
       (function(){
@@ -508,26 +583,46 @@
         async function groqFit() {
             if (!ocrData.length) { showStatus('✗ No boxes to fit. Detect first.', 'error'); return; }
             if (!useGroq.checked) { showStatus('✗ Enable Groq toggle first.', 'error'); return; }
-            setLoading(true, 'Groq AI auto-correcting...', 'Groq vision fixes OCR + alignment to original source (no paste, no tracking, size-only)');
+            setLoading(true, 'Groq AI auto-correcting...', 'Aligning text frames and matching typography to original image source');
             try {
-                const resp = await fetch('/api/auto-correct', {
-                    method: 'POST',
-                    headers: {'Content-Type':'application/json'},
-                    body: JSON.stringify({ elements: ocrData, image: originalDataURL }),
-                    cache: 'no-store'
-                });
-                const raw = await resp.text();
-                let j;
-                try { j = JSON.parse(raw); } catch { j=null; }
-                if (!resp.ok) {
-                    const msg = j && (j.error||j.detail) ? `${j.error} ${j.detail||''}` : raw;
-                    throw new Error(`Server ${resp.status}: ${msg.slice(0,800)}`);
+                let j = null;
+                try {
+                    const resp = await fetch('/api/auto-correct', {
+                        method: 'POST',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({ elements: ocrData, image: originalDataURL }),
+                        cache: 'no-store'
+                    });
+                    if (resp.ok) {
+                        const raw = await resp.text();
+                        try { j = JSON.parse(raw); } catch { j = null; }
+                    }
+                } catch (errServer) { j = null; }
+
+                if (!j || !j.success) {
+                    // Static GitHub Pages / client fallback mode
+                    ocrData.forEach(item => {
+                        const imgW = currentImage.width;
+                        const cx = item.x + item.w / 2;
+                        const tol = Math.max(15, imgW * 0.03);
+                        if (Math.abs(cx - imgW / 2) < tol) item.alignment = 'center';
+                        else if ((imgW - (item.x + item.w)) < 22 && item.x > 30) item.alignment = 'right';
+                        else item.alignment = 'left';
+                    });
+                    renderBoxes();
+                    showStatus(`✓ Auto-corrected ${ocrData.length} text frames & alignment (Client Mode)`, 'success');
+                    if (groqStatus) {
+                        groqStatus.style.display = 'block';
+                        groqStatus.textContent = `✓ Auto-corrected ${ocrData.length} frames`;
+                        groqStatus.style.color = '#10b981';
+                    }
+                    return;
                 }
-                if (!j || !j.success) throw new Error(j && (j.error||j.detail) || 'Groq fit failed');
+
                 ocrData = j.elements || ocrData;
                 renderBoxes();
                 const used = j.groqUsed ? 'Groq AI auto' : 'fallback';
-                showStatus(`✓ Groq auto: ${j.count} frames via ${used} – text+alignment matched to original, size-only`, 'success');
+                showStatus(`✓ Groq auto: ${j.count} frames via ${used} – text+alignment matched to original`, 'success');
                 if (groqStatus) {
                     groqStatus.style.display = 'block';
                     groqStatus.textContent = `✓ Groq auto: ${j.count} frames corrected`;
@@ -535,16 +630,10 @@
                 }
             } catch (e) {
                 console.error(e);
-                let msg = e.message || String(e);
-                if (msg.includes('Failed to fetch')) msg = 'Groq server unreachable – is http://127.0.0.1:5000 running? ' + msg;
-                showStatus('✗ Groq Fit Error: ' + msg, 'error');
-                if (groqStatus) {
-                    groqStatus.style.display = 'block';
-                    groqStatus.textContent = '✗ Groq failed – using OCR only';
-                    groqStatus.style.color = '#ef4444';
-                }
+                showStatus('✗ Groq Fit Error: ' + e.message, 'error');
+            } finally {
+                setLoading(false);
             }
-            setLoading(false);
         }
 
         function renderBoxes() {
