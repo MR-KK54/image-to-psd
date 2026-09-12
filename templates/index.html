@@ -10,10 +10,11 @@
       // GitHub Pages fallback: if /api/detect not available, use Tesseract.js offline (same as converter_final)
       async function fallbackTesseractDetect() {
         if (typeof Tesseract === 'undefined') throw new Error('Tesseract.js not loaded (offline). Check internet for CDN.');
+        const scale = 2; // Preprocessing upscale factor
         const preprocessed = (function(){
           const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = currentImage.width * 2;
-          tempCanvas.height = currentImage.height * 2;
+          tempCanvas.width = currentImage.width * scale;
+          tempCanvas.height = currentImage.height * scale;
           const tCtx = tempCanvas.getContext('2d');
           tCtx.filter = 'contrast(1.6) brightness(1.12) saturate(1.1)';
           tCtx.drawImage(currentImage, 0, 0, tempCanvas.width, tempCanvas.height);
@@ -21,10 +22,10 @@
         })();
         const worker = await Tesseract.createWorker('eng');
         await worker.setParameters({ tessedit_char_whitelist: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:,()-+/[]{}%$@#&!?\'"\\ ' });
-        setLoading(true, 'Running offline OCR (GitHub Pages)...', 'Tesseract.js – no server, same PSD output');
+        setLoading(true, 'Running client-side OCR...', 'Tesseract.js – client-side processing');
         const result = await worker.recognize(preprocessed);
         await worker.terminate();
-        // Reuse same grouping logic as Flask would (simplified)
+
         let grouped = [];
         let filtered = result.data.words.filter(w=>w.confidence>30 && w.text.trim());
         if (!filtered.length) filtered = result.data.words.filter(w=>w.text.trim());
@@ -54,28 +55,57 @@
         let out=[];
         grouped.forEach((line,idx)=>{
           line.words.sort((a,b)=>a.bbox.x0-b.bbox.x0);
-          const x=line.xMin, y=line.y0, w=line.xMax-line.xMin, h=line.y1-line.y0;
-          const text=line.words.map(w=>w.text).join(' ');
-          const avgConf=line.words.reduce((a,b)=>a+b.confidence,0)/line.words.length;
-          const hasDesc=/[gjpqy]/.test(text), hasAsc=/[bdfhkltA-Z]/.test(text);
-          let fs= hasDesc&&hasAsc? h*0.90 : hasDesc||hasAsc? h*0.94 : h*1.02;
-          fs=Math.max(7,fs);
-          const gapNext= idx < sLines.length-1 ? (sLines[idx+1]?sLines[idx+1].y0-line.y1:medianGap) : medianGap;
-          const gval=(gapNext>=0&&gapNext<60)?gapNext:medianGap;
-          let lh=h+(gval||0); lh=Math.max(fs*1.08, Math.min(lh, fs*2.0)); if(!gaps.length) lh=fs*1.15;
-          let align='left'; const imgW=currentImage.width, cx=x+w/2, tol=Math.max(15,imgW*0.03); if(Math.abs(cx-imgW/2)<tol) align='center'; else if((imgW-(x+w))<22 && x>30) align='right';
-          // color via canvas sampling (central 50%)
-          let color='#222222';
-          try{
-            const sx=Math.floor(x+w*0.25), sy=Math.floor(y+h*0.25), sw=Math.max(10,Math.floor(w*0.5)), sh=Math.max(10,Math.floor(h*0.5));
-            const d=fullResCtx.getImageData(sx,sy,sw,sh).data; let freq={};
-            for(let i=0;i<d.length;i+=4){ const r=d[i],g=d[i+1],b=d[i+2],a=d[i+3]; if(a<120) continue; const br=0.299*r+0.587*g+0.114*b; if(br>240||br<10) continue; const k=`${r},${g},${b}`; freq[k]=(freq[k]||0)+1; }
-            if(Object.keys(freq).length){ const dom=Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]; const [r,g,b]=dom.split(',').map(Number); color='#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join(''); }
-          }catch{}
-          out.push({text, x,y,w,h, fontSize:fs, color, confidence:avgConf/100, lineHeight:lh, letterSpacing:0, alignment:align, fontWeight:400, fontStyle:'normal', fontFamily:'ArialMT'});
+          // Scale back coordinates from 2x preprocessing space to 1x image space
+          const x = line.xMin / scale;
+          const y = line.y0 / scale;
+          const w = (line.xMax - line.xMin) / scale;
+          const h = (line.y1 - line.y0) / scale;
+          const text = line.words.map(w=>w.text).join(' ');
+          const avgConf = line.words.reduce((a,b)=>a+b.confidence,0)/line.words.length;
+          const hasDesc = /[gjpqy]/.test(text), hasAsc=/[bdfhkltA-Z]/.test(text);
+          let fs = hasDesc&&hasAsc? h*0.90 : hasDesc||hasAsc? h*0.94 : h*1.02;
+          fs = Math.max(7, fs);
+          const gapNext = idx < sLines.length-1 ? ((sLines[idx+1].y0 - line.y1) / scale) : (medianGap / scale);
+          const gval = (gapNext >= 0 && gapNext < 30) ? gapNext : (medianGap / scale);
+          let lh = h + (gval || 0);
+          lh = Math.max(fs*1.08, Math.min(lh, fs*2.0));
+          if (!gaps.length) lh = fs*1.15;
+
+          let align = 'left';
+          const imgW = currentImage.width;
+          const cx = x + w / 2;
+          const tol = Math.max(15, imgW * 0.03);
+          if (Math.abs(cx - imgW / 2) < tol) align = 'center';
+          else if ((imgW - (x + w)) < 22 && x > 30) align = 'right';
+
+          // Color via canvas sampling (central 50%)
+          let color = '#222222';
+          try {
+            const sx = Math.floor(x + w * 0.25);
+            const sy = Math.floor(y + h * 0.25);
+            const sw = Math.max(2, Math.floor(w * 0.5));
+            const sh = Math.max(2, Math.floor(h * 0.5));
+            const d = fullResCtx.getImageData(sx, sy, sw, sh).data;
+            let freq = {};
+            for(let i=0; i<d.length; i+=4){
+              const r=d[i], g=d[i+1], b=d[i+2], a=d[i+3];
+              if(a<120) continue;
+              const br=0.299*r+0.587*g+0.114*b;
+              if(br>240||br<10) continue;
+              const k=`${r},${g},${b}`;
+              freq[k]=(freq[k]||0)+1;
+            }
+            if(Object.keys(freq).length){
+              const dom=Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0];
+              const [r,g,b]=dom.split(',').map(Number);
+              color='#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
+            }
+          } catch {}
+
+          out.push({text, x, y, w, h, fontSize:fs, color, confidence:avgConf/100, lineHeight:lh, letterSpacing:0, alignment:align, fontWeight:400, fontStyle:'normal', fontFamily:'ArialMT'});
         });
         out.sort((a,b)=>a.y!==b.y ? a.y-b.y : a.x-b.x);
-        return {success:true, engine:'tesseract.js (offline)', elements:out, count:out.length, image_width: currentImage.width, image_height: currentImage.height};
+        return {success:true, engine:'tesseract.js (client-side)', elements:out, count:out.length, image_width: currentImage.width, image_height: currentImage.height};
       }
       // Local fallback if CDN blocked/offline – try static then assets
       (function(){
@@ -666,7 +696,17 @@
                 };
                 const justifyMapStr = { left: 'left', right: 'right', center: 'center', justify: 'justify' };
 
-                // 1. Add Editable Text Layers (Placing text layers FIRST so they stay on top in Photoshop)
+                // 1. Add Original Image Background Layer (Placed FIRST so it is at the BOTTOM in Photoshop)
+                psdLayers.push({
+                    name: "Original Image",
+                    canvas: fullResCanvas,
+                    left: 0, top: 0, right: W, bottom: H,
+                    opacity: 1,
+                    blendMode: 'normal',
+                    hidden: false
+                });
+
+                // 2. Add Editable Text Layers (Placed AFTER background so they sit ON TOP in Photoshop)
                 ocrData.forEach((item, idx) => {
                     let fontFamRaw = (selectedFont && selectedFont !== 'AUTO') ? selectedFont : (item.fontFamily || 'ArialMT');
                     const fontFam = psFontMap[fontFamRaw] || 'ArialMT';
@@ -722,16 +762,6 @@
                     });
                 });
 
-                // 2. Add Original Image Background Layer (Placed LAST so it sits behind text layers)
-                psdLayers.push({
-                    name: "Original Image",
-                    canvas: fullResCanvas,
-                    left: 0, top: 0, right: W, bottom: H,
-                    opacity: 1,
-                    blendMode: 'normal',
-                    hidden: false
-                });
-
                 const psd = {
                     width: W,
                     height: H,
@@ -742,7 +772,7 @@
 
                 let buf;
                 try {
-                    buf = agPsd.writePsd(psd, { generateThumbnail: true });
+                    buf = agPsd.writePsd(psd, { generateThumbnail: true, invalidateTextLayers: true });
                 } catch (e1) {
                     console.warn('agPsd writePsd attempt 1 failed, retrying with Arial font fallback:', e1);
                     // Fallback font fix if custom font caused agPsd encode error
@@ -751,7 +781,7 @@
                             l.text.style.font = { name: 'ArialMT' };
                         }
                     });
-                    buf = agPsd.writePsd(psd, { generateThumbnail: true });
+                    buf = agPsd.writePsd(psd, { generateThumbnail: true, invalidateTextLayers: true });
                 }
 
                 const blob = new Blob([buf], { type: 'application/x-photoshop' });
