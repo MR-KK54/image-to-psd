@@ -869,22 +869,25 @@
             }
         });
 
-        // Health check on load – helps debug “Failed to fetch”
+        // Health check on load
         (async () => {
+            if (location.hostname.includes('github.io')) {
+                showStatus('✓ GitHub Pages Mode • Client-Side Tesseract.js OCR & PSD Generator Active', 'success');
+                return;
+            }
             try {
                 const r = await fetch('/api/health', {cache:'no-store'});
+                if (!r.ok) return;
                 const j = await r.json();
-                if (j.status==='ok') {
+                if (j.status === 'ok') {
                     console.log('Server health', j);
-                    if (!j.easyocr) showStatus('⚠ EasyOCR not available – detection will fail. Install: pip install easyocr', 'error');
+                    if (!j.easyocr) showStatus('⚠ EasyOCR not available – using Tesseract backend', 'info');
                 }
             } catch (err) {
                 if (location.protocol === 'file:') {
-                    showStatus('⚠ Open via http://127.0.0.1:5000 (not file://). Double-click RUN_SERVER.bat first.', 'error');
-                } else {
-                    showStatus('⚠ Server not reachable – keep the Python window open and wait for “Running on http://0.0.0.0:5000”. Try RUN_SERVER.bat or http://127.0.0.1:5000', 'error');
+                    showStatus('⚠ Running from file://. Please launch via Image to PSD desktop app shortcut.', 'error');
                 }
-                console.warn('health check failed', err);
+                console.warn('health check info', err);
             }
         })();
     </script>
